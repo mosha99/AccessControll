@@ -1,0 +1,150 @@
+@page "/login"
+@using AccessControll.Blazor.Services
+@inject IAuthService AuthService
+@inject NavigationManager Nav
+@layout AccessControll.Blazor.Layout.EmptyLayout
+
+<div class="login-page" dir="rtl">
+    <div class="login-card">
+        <div class="login-header">
+            <div class="login-icon">🔐</div>
+            <h1>AccessControll</h1>
+            <p>سیستم کنترل دسترسی</p>
+        </div>
+
+        @if (!_requiresTwoFactor)
+        {
+            <div class="form-group">
+                <label>ایمیل</label>
+                <input type="email" @bind="_email" placeholder="email@example.com" class="form-input" />
+            </div>
+            <div class="form-group">
+                <label>رمز عبور</label>
+                <input type="password" @bind="_password" placeholder="••••••••" class="form-input"
+                       @onkeydown="@(e => { if (e.Key == "Enter") HandleLogin(); })" />
+            </div>
+        }
+        else
+        {
+            <div class="twofa-notice">
+                <div class="twofa-icon">📱</div>
+                <p>کد تأیید دو مرحله‌ای را از اپ احراز هویت خود وارد کنید</p>
+            </div>
+            <div class="form-group">
+                <label>کد ۶ رقمی</label>
+                <input type="text" @bind="_twoFactorCode" placeholder="123456" class="form-input code-input"
+                       maxlength="6" @onkeydown="@(e => { if (e.Key == "Enter") HandleLogin(); })" />
+            </div>
+        }
+
+        @if (!string.IsNullOrEmpty(_error))
+        {
+            <div class="error-alert">⚠️ @_error</div>
+        }
+
+        <button class="btn-login" @onclick="HandleLogin" disabled="@_loading">
+            @if (_loading)
+            {
+                <span class="spinner"></span>
+                <span>در حال ورود...</span>
+            }
+            else
+            {
+                <span>@(_requiresTwoFactor ? "تأیید کد" : "ورود به سیستم")</span>
+            }
+        </button>
+
+        @if (_requiresTwoFactor)
+        {
+            <button class="btn-back" @onclick="@(() => { _requiresTwoFactor = false; _twoFactorCode = ""; _error = ""; })">
+                ← بازگشت
+            </button>
+        }
+    </div>
+</div>
+
+@code {
+    private string _email = "";
+    private string _password = "";
+    private string _twoFactorCode = "";
+    private bool _requiresTwoFactor = false;
+    private bool _loading = false;
+    private string _error = "";
+
+    private async Task HandleLogin()
+    {
+        if (_loading) return;
+        _loading = true;
+        _error = "";
+
+        var result = await AuthService.LoginAsync(_email, _password,
+            _requiresTwoFactor ? _twoFactorCode : null);
+
+        if (result.Succeeded)
+            Nav.NavigateTo("/");
+        else if (result.RequiresTwoFactor)
+            _requiresTwoFactor = true;
+        else
+            _error = result.Error ?? "خطا در ورود";
+
+        _loading = false;
+    }
+}
+
+<style>
+    .login-page {
+        min-height: 100vh; display: flex; align-items: center; justify-content: center;
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        padding: 20px;
+    }
+    .login-card {
+        background: white; border-radius: 16px; padding: 40px;
+        width: 100%; max-width: 400px; box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+        direction: rtl;
+    }
+    .login-header { text-align: center; margin-bottom: 32px; }
+    .login-icon { font-size: 48px; margin-bottom: 12px; }
+    .login-header h1 { font-size: 28px; font-weight: 700; color: #1a1a2e; margin-bottom: 6px; }
+    .login-header p { color: #666; font-size: 14px; }
+
+    .form-group { margin-bottom: 18px; }
+    .form-group label { display: block; font-size: 13px; font-weight: 600; color: #333; margin-bottom: 6px; }
+    .form-input {
+        width: 100%; padding: 12px 14px; border: 2px solid #e0e0e0; border-radius: 8px;
+        font-size: 15px; transition: border-color 0.2s; outline: none; direction: ltr;
+    }
+    .form-input:focus { border-color: #0f3460; }
+    .code-input { text-align: center; font-size: 24px; letter-spacing: 8px; }
+
+    .twofa-notice {
+        background: #f0f7ff; border: 1px solid #bde0ff; border-radius: 10px;
+        padding: 16px; text-align: center; margin-bottom: 20px;
+    }
+    .twofa-icon { font-size: 32px; margin-bottom: 8px; }
+    .twofa-notice p { font-size: 13px; color: #444; line-height: 1.6; }
+
+    .error-alert {
+        background: #fff0f0; border: 1px solid #ffb3b3; color: #c00; border-radius: 8px;
+        padding: 12px; font-size: 13px; margin-bottom: 16px;
+    }
+
+    .btn-login {
+        width: 100%; padding: 14px; background: linear-gradient(135deg, #0f3460, #1a1a2e);
+        color: white; border: none; border-radius: 10px; font-size: 16px; font-weight: 600;
+        cursor: pointer; transition: all 0.2s; display: flex; align-items: center; justify-content: center; gap: 8px;
+    }
+    .btn-login:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(15,52,96,0.4); }
+    .btn-login:disabled { opacity: 0.7; cursor: not-allowed; }
+
+    .btn-back {
+        width: 100%; padding: 10px; background: none; border: 1px solid #ddd; border-radius: 8px;
+        color: #666; font-size: 14px; cursor: pointer; margin-top: 10px; transition: all 0.2s;
+    }
+    .btn-back:hover { background: #f5f5f5; }
+
+    .spinner {
+        width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.3);
+        border-top-color: white; border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+    @@keyframes spin { to { transform: rotate(360deg); } }
+</style>

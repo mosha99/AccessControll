@@ -1,0 +1,96 @@
+@inherits LayoutComponentBase
+@using Microsoft.AspNetCore.Components.Authorization
+@inject NavigationManager Nav
+@inject AccessControll.Blazor.Services.IAuthService AuthService
+
+<div class="layout-container" dir="rtl">
+    <nav class="sidebar">
+        <div class="sidebar-header">
+            <span class="logo">🔐 AccessControll</span>
+            <span class="subtitle">کنترل دسترسی</span>
+        </div>
+        <AuthorizeView>
+            <Authorized Context="outerAuth">
+                <ul class="nav-list">
+                    <li><a href="/" class="nav-link">🏠 داشبورد</a></li>
+                    <li><a href="/doors" class="nav-link">🚪 مدیریت درها</a></li>
+                    <li><a href="/logs" class="nav-link">📋 لاگ دسترسی</a></li>
+                    <AuthorizeView Roles="Admin">
+                        <Authorized Context="adminAuth">
+                            <li><a href="/users" class="nav-link">👥 کاربران</a></li>
+                            <li><a href="/roles" class="nav-link">🎭 نقش‌ها</a></li>
+                        </Authorized>
+                    </AuthorizeView>
+                    <li><a href="/profile" class="nav-link">⚙️ پروفایل</a></li>
+                    <li>
+                        <button class="nav-link btn-logout" @onclick="HandleLogout">🚪 خروج</button>
+                    </li>
+                </ul>
+                <div class="user-info">
+                    <span>@outerAuth.User.Identity?.Name</span>
+                </div>
+            </Authorized>
+            <NotAuthorized>
+                <ul class="nav-list">
+                    <li><a href="/login" class="nav-link">🔑 ورود</a></li>
+                </ul>
+            </NotAuthorized>
+        </AuthorizeView>
+    </nav>
+
+    <main class="main-content">
+        <div class="content-wrapper">
+            @Body
+        </div>
+    </main>
+</div>
+
+@code {
+    private async Task HandleLogout()
+    {
+        await AuthService.LogoutAsync();
+        Nav.NavigateTo("/login", true);
+    }
+}
+
+<style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #f0f2f5; }
+
+    .layout-container { display: flex; min-height: 100vh; direction: rtl; }
+
+    .sidebar {
+        width: 240px; min-height: 100vh;
+        background: linear-gradient(180deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        color: white; padding: 0; display: flex; flex-direction: column;
+        box-shadow: 2px 0 10px rgba(0,0,0,0.3); position: fixed; right: 0; top: 0; z-index: 100;
+    }
+
+    .sidebar-header {
+        padding: 24px 20px; border-bottom: 1px solid rgba(255,255,255,0.1);
+        display: flex; flex-direction: column; gap: 4px;
+    }
+    .logo { font-size: 20px; font-weight: 700; letter-spacing: 1px; }
+    .subtitle { font-size: 11px; color: rgba(255,255,255,0.5); }
+
+    .nav-list { list-style: none; padding: 12px 0; flex: 1; }
+    .nav-list li { margin: 2px 12px; }
+
+    .nav-link {
+        display: block; padding: 10px 14px; border-radius: 8px; color: rgba(255,255,255,0.75);
+        text-decoration: none; font-size: 14px; transition: all 0.2s; cursor: pointer;
+        background: none; border: none; width: 100%; text-align: right;
+    }
+    .nav-link:hover { background: rgba(255,255,255,0.12); color: white; transform: translateX(-3px); }
+
+    .btn-logout { color: #ff6b6b; }
+    .btn-logout:hover { background: rgba(255,107,107,0.15) !important; color: #ff6b6b !important; }
+
+    .user-info { padding: 16px 20px; border-top: 1px solid rgba(255,255,255,0.1); font-size: 12px; color: rgba(255,255,255,0.5); }
+
+    .main-content { margin-right: 240px; flex: 1; min-height: 100vh; }
+    .content-wrapper { padding: 28px; max-width: 1200px; }
+
+    .access-denied, .not-found { padding: 60px; text-align: center; color: #666; }
+    .access-denied h2, .not-found h2 { font-size: 28px; margin-bottom: 12px; }
+</style>

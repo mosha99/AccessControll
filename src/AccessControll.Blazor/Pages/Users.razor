@@ -1,0 +1,317 @@
+@page "/users"
+@using AccessControll.Blazor.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Roles = "Admin")]
+@inject IUserService UserService
+@inject IRoleService RoleService
+
+<PageTitle>مدیریت کاربران — MediaR</PageTitle>
+
+<div class="page" dir="rtl">
+    <div class="page-header">
+        <h1>👥 مدیریت کاربران</h1>
+        <button class="btn-primary" @onclick="OpenCreateModal">+ کاربر جدید</button>
+    </div>
+
+    @if (_loading)
+    {
+        <div class="loading-spinner">در حال بارگذاری...</div>
+    }
+    else
+    {
+        <div class="card">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>نام کامل</th>
+                        <th>ایمیل</th>
+                        <th>وضعیت</th>
+                        <th>2FA</th>
+                        <th>نقش‌ها</th>
+                        <th>آخرین ورود</th>
+                        <th>عملیات</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var user in _users)
+                    {
+                        <tr>
+                            <td><strong>@user.FullName</strong></td>
+                            <td>@user.Email</td>
+                            <td>
+                                <span class="badge @(user.IsActive ? "badge-success" : "badge-danger")">
+                                    @(user.IsActive ? "فعال" : "غیرفعال")
+                                </span>
+                            </td>
+                            <td>
+                                <span class="badge @(user.TwoFactorEnabled ? "badge-info" : "badge-muted")">
+                                    @(user.TwoFactorEnabled ? "فعال" : "غیرفعال")
+                                </span><div class="roles-list">
+                                    @foreach (var role in user.Roles)
+                                    {
+                                        <span class="role-tag">@role</span>
+                                    }
+                                </div>
+                            </td>
+                            <td>
+                                
+                            </td>
+                            <td>@(user.LastLoginAt?.ToLocalTime().ToString("yyyy/MM/dd HH:mm") ?? "—")</td>
+                            <td>
+                                <div class="actions">
+                                    <button class="btn-sm btn-edit" @onclick="@(() => OpenEditModal(user))">✏️</button>
+                                    <button class="btn-sm @(user.IsActive ? "btn-warn" : "btn-ok")" @onclick="@(() => ToggleUser(user.Id))">
+                                        @(user.IsActive ? "🔒" : "🔓")
+                                    </button>
+                                    <button class="btn-sm btn-delete" @onclick="@(() => DeleteUser(user.Id))">🗑️</button>
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+
+            <div class="pagination">
+                <button @onclick="PrevPage" disabled="@(_page == 1)">← قبلی</button>
+                <span>صفحه @_page از @_totalPages</span>
+                <button @onclick="NextPage" disabled="@(_page >= _totalPages)">بعدی →</button>
+            </div>
+        </div>
+    }
+</div>
+
+<!-- Modal: Create/Edit User -->
+@if (_showModal)
+{
+    <div class="modal-overlay" @onclick="CloseModal">
+        <div class="modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h3>@(_editingUser == null ? "ایجاد کاربر جدید" : "ویرایش کاربر")</h3>
+                <button class="modal-close" @onclick="CloseModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-row">
+                    <label>نام کامل</label>
+                    <input type="text" @bind="_form.FullName" class="form-input" />
+                </div>
+                @if (_editingUser == null)
+                {
+                    <div class="form-row">
+                        <label>ایمیل</label>
+                        <input type="email" @bind="_form.Email" class="form-input" dir="ltr" />
+                    </div>
+                    <div class="form-row">
+                        <label>رمز عبور</label>
+                        <input type="password" @bind="_form.Password" class="form-input" />
+                    </div>
+                }
+                <div class="form-row">
+                    <label>وضعیت</label>
+                    <label class="toggle">
+                        <input type="checkbox" @bind="_form.IsActive" />
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-label">@(_form.IsActive ? "فعال" : "غیرفعال")</span>
+                    </label>
+                </div>
+                <div class="form-row">
+                    <label>نقش‌ها</label>
+                    <div class="roles-checkboxes">
+                        @foreach (var role in _allRoles)
+                        {
+                            <label class="checkbox-label">
+                                <input type="checkbox"
+                                       checked="@_form.SelectedRoles.Contains(role.Name)"
+                                       @onchange="@(e => ToggleRole(role.Name, (bool)e.Value!))" />
+                                @role.Name
+                            </label>
+                        }
+                    </div>
+                </div>
+                @if (!string.IsNullOrEmpty(_formError))
+                {
+                    <div class="form-error">⚠️ @_formError</div>
+                }
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" @onclick="CloseModal">انصراف</button>
+                <button class="btn-primary" @onclick="SaveUser" disabled="@_saving">
+                    @(_saving ? "در حال ذخیره..." : "ذخیره")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<UserDto> _users = new();
+    private List<RoleDto> _allRoles = new();
+    private bool _loading = true;
+    private int _page = 1, _pageSize = 15, _total, _totalPages;
+    private bool _showModal, _saving;
+    private string _formError = "";
+    private UserDto? _editingUser;
+
+    private UserFormModel _form = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadRoles();
+        await LoadUsers();
+    }
+
+    private async Task LoadUsers()
+    {
+        _loading = true;
+        var result = await UserService.GetAllAsync(_page, _pageSize);
+        _users = result.Items.ToList();
+        _total = result.Total;
+        _totalPages = (int)Math.Ceiling((double)_total / _pageSize);
+        _loading = false;
+    }
+
+    private async Task LoadRoles() => _allRoles = await RoleService.GetAllAsync();
+
+    private void OpenCreateModal()
+    {
+        _editingUser = null;
+        _form = new UserFormModel { IsActive = true };
+        _formError = "";
+        _showModal = true;
+    }
+
+    private void OpenEditModal(UserDto user)
+    {
+        _editingUser = user;
+        _form = new UserFormModel
+        {
+            FullName = user.FullName,
+            Email = user.Email,
+            IsActive = user.IsActive,
+            SelectedRoles = user.Roles.ToList()
+        };
+        _formError = "";
+        _showModal = true;
+    }
+
+    private void ToggleRole(string roleName, bool isChecked)
+    {
+        if (isChecked && !_form.SelectedRoles.Contains(roleName))
+            _form.SelectedRoles.Add(roleName);
+        else if (!isChecked)
+            _form.SelectedRoles.Remove(roleName);
+    }
+
+    private async Task SaveUser()
+    {
+        _saving = true;
+        _formError = "";
+
+        if (_editingUser == null)
+        {
+            var (ok, errors) = await UserService.CreateAsync(_form.Email, _form.FullName, _form.Password, _form.SelectedRoles);
+            if (!ok) { _formError = string.Join("، ", errors); _saving = false; return; }
+        }
+        else
+        {
+            await UserService.UpdateAsync(_editingUser.Id, _form.FullName, _form.IsActive, _form.SelectedRoles);
+        }
+
+        CloseModal();
+        await LoadUsers();
+        _saving = false;
+    }
+
+    private async Task ToggleUser(string id)
+    {
+        await UserService.ToggleActiveAsync(id);
+        await LoadUsers();
+    }
+
+    private async Task DeleteUser(string id)
+    {
+        if (await UserService.DeleteAsync(id))
+            await LoadUsers();
+    }
+
+    private async Task PrevPage() { if (_page > 1) { _page--; await LoadUsers(); } }
+    private async Task NextPage() { if (_page < _totalPages) { _page++; await LoadUsers(); } }
+    private void CloseModal() { _showModal = false; }
+
+    private class UserFormModel
+    {
+        public string Email { get; set; } = "";
+        public string FullName { get; set; } = "";
+        public string Password { get; set; } = "";
+        public bool IsActive { get; set; } = true;
+        public List<string> SelectedRoles { get; set; } = new();
+    }
+}
+
+<style>
+    .page { direction: rtl; }
+    .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+    .page-header h1 { font-size: 24px; font-weight: 700; color: #1a1a2e; }
+    .card { background: white; border-radius: 14px; padding: 0; box-shadow: 0 2px 12px rgba(0,0,0,0.07); overflow: hidden; }
+    .data-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .data-table th { background: #f0f4ff; padding: 14px 16px; text-align: right; font-weight: 600; color: #333; border-bottom: 2px solid #e8e8e8; }
+    .data-table td { padding: 12px 16px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+    .data-table tr:hover td { background: #fafbff; }
+
+    .badge { font-size: 11px; padding: 3px 10px; border-radius: 20px; font-weight: 500; }
+    .badge-success { background: #d4edda; color: #1a7a3c; }
+    .badge-danger { background: #fdecea; color: #c00; }
+    .badge-info { background: #d0e8ff; color: #1565c0; }
+    .badge-muted { background: #f0f0f0; color: #888; }
+
+    .roles-list { display: flex; gap: 4px; flex-wrap: wrap; }
+    .role-tag { background: #e8f0fe; color: #1a73e8; font-size: 11px; padding: 2px 8px; border-radius: 4px; }
+
+    .actions { display: flex; gap: 6px; }
+    .btn-sm { padding: 5px 10px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; transition: all 0.15s; }
+    .btn-edit { background: #e8f0fe; }
+    .btn-edit:hover { background: #c5d8ff; }
+    .btn-warn { background: #fff3cd; }
+    .btn-ok { background: #d4edda; }
+    .btn-delete { background: #fdecea; }
+    .btn-delete:hover { background: #f8bbbb; }
+
+    .pagination { display: flex; justify-content: center; align-items: center; gap: 16px; padding: 16px; font-size: 14px; }
+    .pagination button { padding: 7px 16px; border: 1px solid #ddd; border-radius: 6px; background: white; cursor: pointer; }
+    .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .pagination button:hover:not(:disabled) { background: #f0f4ff; }
+
+    .btn-primary { background: #0f3460; color: white; padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s; }
+    .btn-primary:hover:not(:disabled) { background: #16213e; }
+    .btn-primary:disabled { opacity: 0.7; cursor: not-allowed; }
+    .btn-secondary { background: #f0f0f0; color: #333; padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
+
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+    .modal { background: white; border-radius: 16px; width: 480px; max-width: 95vw; overflow: hidden; box-shadow: 0 20px 50px rgba(0,0,0,0.3); }
+    .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 20px 24px; border-bottom: 1px solid #eee; }
+    .modal-header h3 { font-size: 18px; font-weight: 600; color: #1a1a2e; }
+    .modal-close { background: none; border: none; font-size: 18px; cursor: pointer; color: #888; padding: 4px 8px; border-radius: 4px; }
+    .modal-close:hover { background: #f0f0f0; }
+    .modal-body { padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+    .modal-footer { display: flex; justify-content: flex-start; gap: 10px; padding: 16px 24px; border-top: 1px solid #eee; }
+
+    .form-row { display: flex; flex-direction: column; gap: 6px; }
+    .form-row label { font-size: 13px; font-weight: 500; color: #444; }
+    .form-input { padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px; outline: none; transition: border-color 0.2s; }
+    .form-input:focus { border-color: #0f3460; }
+
+    .roles-checkboxes { display: flex; gap: 10px; flex-wrap: wrap; }
+    .checkbox-label { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; padding: 6px 12px; border: 1px solid #e0e0e0; border-radius: 20px; }
+    .checkbox-label:hover { background: #f0f4ff; border-color: #0f3460; }
+
+    .form-error { background: #fdecea; border: 1px solid #ffb3b3; color: #c00; border-radius: 8px; padding: 10px; font-size: 13px; }
+
+    .toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+    .toggle input { display: none; }
+    .toggle-slider { width: 44px; height: 24px; background: #ccc; border-radius: 12px; position: relative; transition: background 0.2s; }
+    .toggle input:checked + .toggle-slider { background: #27ae60; }
+    .toggle-slider::after { content: ''; position: absolute; width: 18px; height: 18px; background: white; border-radius: 50%; top: 3px; right: 3px; transition: transform 0.2s; }
+    .toggle input:checked + .toggle-slider::after { transform: translateX(-20px); }
+    .toggle-label { font-size: 13px; color: #555; }
+
+    .loading-spinner { padding: 60px; text-align: center; color: #888; }
+</style>

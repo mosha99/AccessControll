@@ -1,0 +1,238 @@
+@page "/"
+@using AccessControll.Blazor.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize]
+@inject IDoorService DoorService
+@inject ILogService LogService
+@inject DoorHubService HubService
+@implements IAsyncDisposable
+
+<PageTitle>داشبورد — MediaR</PageTitle>
+
+<div class="dashboard" dir="rtl">
+    <div class="page-header">
+        <h1>🏠 داشبورد</h1>
+        <span class="hub-status @(_hubConnected ? "connected" : "disconnected")">
+            @(_hubConnected ? "● آنلاین" : "○ آفلاین")
+        </span>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-icon">🚪</div>
+            <div class="stat-info">
+                <span class="stat-value">@_totalDoors</span>
+                <span class="stat-label">تعداد درها</span>
+            </div>
+        </div>
+        <div class="stat-card green">
+            <div class="stat-icon">🔓</div>
+            <div class="stat-info">
+                <span class="stat-value">@_unlockedDoors</span>
+                <span class="stat-label">درهای باز</span>
+            </div>
+        </div>
+        <div class="stat-card red">
+            <div class="stat-icon">🔒</div>
+            <div class="stat-info">
+                <span class="stat-value">@_lockedDoors</span>
+                <span class="stat-label">درهای قفل</span>
+            </div>
+        </div>
+        <div class="stat-card blue">
+            <div class="stat-icon">📊</div>
+            <div class="stat-info">
+                <span class="stat-value">@_todayLogs</span>
+                <span class="stat-label">تراکنش امروز</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Door quick controls -->
+    <div class="section">
+        <h2>🚪 کنترل سریع درها</h2>
+        @if (_loading)
+        {
+            <div class="loading">در حال بارگذاری...</div>
+        }
+        else
+        {
+            <div class="doors-grid">
+                @foreach (var door in _doors)
+                {
+                    <div class="door-card @(door.IsLocked ? "locked" : "unlocked") @(!door.IsEnabled ? "disabled" : "")">
+                        <div class="door-icon">@(door.IsLocked ? "🔒" : "🔓")</div>
+                        <div class="door-info">
+                            <span class="door-name">@door.Name</span>
+                            <span class="door-location">📍 @door.Location</span>
+                            <span class="door-status">@(door.IsEnabled ? (door.IsLocked ? "قفل" : "باز") : "غیرفعال")</span>
+                        </div>
+                        @if (door.IsEnabled)
+                        {
+                            <div class="door-actions">
+                                <button class="btn-open" @onclick="@(() => ControlDoor(door.Id, false))"
+                                        disabled="@(!door.IsLocked)">باز</button>
+                                <button class="btn-lock" @onclick="@(() => ControlDoor(door.Id, true))"
+                                        disabled="@(door.IsLocked)">قفل</button>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        }
+    </div>
+
+    <!-- Recent logs -->
+    <div class="section">
+        <h2>📋 آخرین رویدادها</h2>
+        <div class="log-list">
+            @foreach (var log in _recentLogs)
+            {
+                <div class="log-item @(log.Result == "Success" ? "success" : "fail")">
+                    <span class="log-icon">@(log.Action == "Unlock" ? "🔓" : log.Action == "Lock" ? "🔒" : "🚪")</span>
+                    <div class="log-details">
+                        <span class="log-main">@log.UserFullName — @log.DoorName</span>
+                        <span class="log-sub">@log.Action | @log.Result | @log.AccessedAt.ToLocalTime().ToString("HH:mm:ss dd/MM")</span>
+                    </div>
+                    <span class="log-badge @(log.Result == "Success" ? "badge-success" : "badge-fail")">
+                        @log.Result
+                    </span>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    private List<DoorDto> _doors = new();
+    private List<DoorLogDto> _recentLogs = new();
+    private bool _loading = true;
+    private bool _hubConnected = false;
+    private int _totalDoors, _unlockedDoors, _lockedDoors, _todayLogs;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+        await ConnectHub();
+    }
+
+    private async Task LoadData()
+    {
+        _loading = true;
+        _doors = await DoorService.GetAllAsync();
+        _totalDoors = _doors.Count;
+        _unlockedDoors = _doors.Count(d => !d.IsLocked && d.IsEnabled);
+        _lockedDoors = _doors.Count(d => d.IsLocked);
+
+        var today = DateTime.UtcNow.Date;
+        var logs = await LogService.GetLogsAsync(from: today, pageSize: 10);
+        _recentLogs = logs.Items.ToList();
+        _todayLogs = logs.Total;
+        _loading = false;
+    }
+
+    private async Task ConnectHub()
+    {
+        try
+        {
+            HubService.OnDoorStatusChanged += OnDoorStatusChanged;
+            await HubService.StartAsync();
+            _hubConnected = HubService.IsConnected;
+        }
+        catch { _hubConnected = false; }
+    }
+
+    private void OnDoorStatusChanged(DoorStatusChanged status)
+    {
+        var door = _doors.FirstOrDefault(d => d.Id == status.DoorId);
+        if (door != null)
+        {
+            var idx = _doors.IndexOf(door);
+            _doors[idx] = door with { IsLocked = status.IsLocked };
+            _unlockedDoors = _doors.Count(d => !d.IsLocked && d.IsEnabled);
+            _lockedDoors = _doors.Count(d => d.IsLocked);
+            InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task ControlDoor(Guid doorId, bool lock_)
+    {
+        var (success, msg) = await DoorService.ControlDoorAsync(doorId, lock_);
+        if (success)
+            await LoadData();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        HubService.OnDoorStatusChanged -= OnDoorStatusChanged;
+        await HubService.StopAsync();
+    }
+}
+
+<style>
+    .dashboard { direction: rtl; }
+    .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
+    .page-header h1 { font-size: 26px; font-weight: 700; color: #1a1a2e; }
+
+    .hub-status { font-size: 12px; padding: 4px 10px; border-radius: 20px; font-weight: 500; }
+    .hub-status.connected { background: #e6f7ec; color: #1a7a3c; }
+    .hub-status.disconnected { background: #ffeef0; color: #c00; }
+
+    .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; margin-bottom: 32px; }
+    .stat-card {
+        background: white; border-radius: 12px; padding: 20px; display: flex; align-items: center; gap: 16px;
+        box-shadow: 0 2px 12px rgba(0,0,0,0.07); border-right: 4px solid #0f3460;
+    }
+    .stat-card.green { border-color: #1a7a3c; }
+    .stat-card.red { border-color: #c0392b; }
+    .stat-card.blue { border-color: #2980b9; }
+    .stat-icon { font-size: 32px; }
+    .stat-value { display: block; font-size: 28px; font-weight: 700; color: #1a1a2e; }
+    .stat-label { font-size: 13px; color: #666; }
+
+    .section { background: white; border-radius: 14px; padding: 24px; margin-bottom: 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.07); }
+    .section h2 { font-size: 18px; font-weight: 600; margin-bottom: 20px; color: #1a1a2e; }
+
+    .doors-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
+    .door-card {
+        border: 2px solid #e0e0e0; border-radius: 12px; padding: 18px;
+        display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; transition: all 0.2s;
+    }
+    .door-card.unlocked { border-color: #27ae60; background: #f0fff4; }
+    .door-card.locked { border-color: #e74c3c; background: #fff5f5; }
+    .door-card.disabled { opacity: 0.5; background: #f9f9f9; border-color: #ccc; }
+    .door-icon { font-size: 36px; }
+    .door-name { font-weight: 600; font-size: 15px; color: #333; display: block; }
+    .door-location { font-size: 12px; color: #888; display: block; }
+    .door-status { font-size: 12px; font-weight: 500; display: block; color: #555; }
+    .door-actions { display: flex; gap: 8px; margin-top: 4px; }
+    .btn-open, .btn-lock {
+        padding: 6px 14px; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; font-weight: 500; transition: all 0.2s;
+    }
+    .btn-open { background: #27ae60; color: white; }
+    .btn-open:hover:not(:disabled) { background: #229954; }
+    .btn-lock { background: #e74c3c; color: white; }
+    .btn-lock:hover:not(:disabled) { background: #c0392b; }
+    .btn-open:disabled, .btn-lock:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .log-list { display: flex; flex-direction: column; gap: 8px; }
+    .log-item {
+        display: flex; align-items: center; gap: 14px; padding: 12px 16px;
+        border-radius: 8px; background: #f8f9fa; border-right: 3px solid #ccc;
+    }
+    .log-item.success { border-color: #27ae60; background: #f0fff4; }
+    .log-item.fail { border-color: #e74c3c; background: #fff5f5; }
+    .log-icon { font-size: 20px; }
+    .log-details { flex: 1; }
+    .log-main { display: block; font-size: 14px; font-weight: 500; color: #333; }
+    .log-sub { display: block; font-size: 12px; color: #888; margin-top: 2px; }
+    .log-badge { font-size: 11px; padding: 3px 10px; border-radius: 20px; font-weight: 500; }
+    .badge-success { background: #d4edda; color: #1a7a3c; }
+    .badge-fail { background: #fdecea; color: #c00; }
+    .loading { padding: 40px; text-align: center; color: #888; }
+
+    @@media (max-width: 900px) {
+        .stats-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+</style>

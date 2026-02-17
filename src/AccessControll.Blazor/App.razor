@@ -1,0 +1,30 @@
+@using Microsoft.AspNetCore.Components.Authorization
+@using AccessControll.Blazor.Layout
+
+<CascadingAuthenticationState>
+    <Router AppAssembly="@typeof(App).Assembly">
+        <Found Context="routeData">
+            <AuthorizeRouteView RouteData="@routeData" DefaultLayout="@typeof(MainLayout)">
+                <NotAuthorized>
+                    @if (!context.User.Identity!.IsAuthenticated)
+                    {
+                        <RedirectToLogin />
+                    }
+                    else
+                    {
+                        <div class="access-denied">
+                            <h2>🚫 دسترسی ممنوع</h2>
+                            <p>شما مجاز به مشاهده این صفحه نیستید.</p>
+                        </div>
+                    }
+                </NotAuthorized>
+            </AuthorizeRouteView>
+        </Found>
+        <NotFound>
+            <PageTitle>صفحه یافت نشد</PageTitle>
+            <div class="not-found">
+                <h2>404 — صفحه یافت نشد</h2>
+            </div>
+        </NotFound>
+    </Router>
+</CascadingAuthenticationState>

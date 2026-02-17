@@ -1,0 +1,180 @@
+@page "/roles"
+@using AccessControll.Blazor.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Roles = "Admin")]
+@inject IRoleService RoleService
+
+<PageTitle>مدیریت نقش‌ها — MediaR</PageTitle>
+
+<div class="page" dir="rtl">
+    <div class="page-header">
+        <div>
+            <h1>🎭 مدیریت نقش‌ها (Dynamic Roles)</h1>
+            <p class="subtitle">نقش‌های سیستم را به صورت داینامیک مدیریت کنید</p>
+        </div>
+        <button class="btn-primary" @onclick="OpenCreateModal">+ نقش جدید</button>
+    </div>
+
+    <div class="roles-grid">
+        @foreach (var role in _roles)
+        {
+            <div class="role-card">
+                <div class="role-icon">🎭</div>
+                <div class="role-info">
+                    <span class="role-name">@role.Name</span>
+                    <span class="role-users">@role.UsersCount کاربر</span>
+                </div>
+                <div class="role-actions">
+                    @if (!IsSystemRole(role.Name))
+                    {
+                        <button class="btn-delete-role" @onclick="@(() => DeleteRole(role.Id, role.Name))"
+                                title="حذف نقش">🗑️ حذف</button>
+                    }
+                    else
+                    {
+                        <span class="system-badge">سیستمی</span>
+                    }
+                </div>
+            </div>
+        }
+
+        <!-- Add new role card -->
+        <div class="role-card role-add" @onclick="OpenCreateModal">
+            <div class="add-icon">+</div>
+            <span>نقش جدید</span>
+        </div>
+    </div>
+
+    <div class="info-box">
+        <h3>ℹ️ نحوه استفاده از نقش‌های داینامیک</h3>
+        <ul>
+            <li>نقش‌های جدید پس از ایجاد بلافاصله در سیستم فعال می‌شوند</li>
+            <li>می‌توانید از صفحه کاربران نقش‌ها را به کاربران اختصاص دهید</li>
+            <li>نقش‌های سیستمی (Admin, DoorManager, User) قابل حذف نیستند</li>
+            <li>برای کنترل درها، کاربران باید دارای نقش <strong>DoorManager</strong> یا <strong>Admin</strong> باشند</li>
+        </ul>
+    </div>
+</div>
+
+@if (_showModal)
+{
+    <div class="modal-overlay" @onclick="CloseModal">
+        <div class="modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h3>ایجاد نقش جدید</h3>
+                <button class="modal-close" @onclick="CloseModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-row">
+                    <label>نام نقش (انگلیسی)</label>
+                    <input type="text" @bind="_newRoleName" class="form-input" placeholder="e.g. SecurityManager" dir="ltr" />
+                </div>
+                @if (!string.IsNullOrEmpty(_error))
+                {
+                    <div class="form-error">⚠️ @_error</div>
+                }
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" @onclick="CloseModal">انصراف</button>
+                <button class="btn-primary" @onclick="CreateRole" disabled="@_saving">
+                    @(_saving ? "در حال ایجاد..." : "ایجاد نقش")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<RoleDto> _roles = new();
+    private bool _loading = true;
+    private bool _showModal, _saving;
+    private string _newRoleName = "";
+    private string _error = "";
+
+    private static readonly HashSet<string> SystemRoles = new() { "Admin", "DoorManager", "User" };
+
+    protected override async Task OnInitializedAsync() => await LoadRoles();
+
+    private async Task LoadRoles()
+    {
+        _loading = true;
+        _roles = await RoleService.GetAllAsync();
+        _loading = false;
+    }
+
+    private bool IsSystemRole(string name) => SystemRoles.Contains(name);
+
+    private void OpenCreateModal() { _newRoleName = ""; _error = ""; _showModal = true; }
+    private void CloseModal() { _showModal = false; }
+
+    private async Task CreateRole()
+    {
+        if (string.IsNullOrWhiteSpace(_newRoleName)) { _error = "نام نقش الزامی است"; return; }
+        _saving = true;
+        var success = await RoleService.CreateAsync(_newRoleName.Trim());
+        if (success) { CloseModal(); await LoadRoles(); }
+        else { _error = "خطا در ایجاد نقش"; }
+        _saving = false;
+    }
+
+    private async Task DeleteRole(string id, string name)
+    {
+        if (IsSystemRole(name)) return;
+        var success = await RoleService.DeleteAsync(id);
+        if (success) await LoadRoles();
+    }
+}
+
+<style>
+    .page { direction: rtl; }
+    .page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; }
+    .page-header h1 { font-size: 24px; font-weight: 700; color: #1a1a2e; }
+    .subtitle { color: #888; font-size: 13px; margin-top: 4px; }
+
+    .roles-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-bottom: 32px; }
+    .role-card {
+        background: white; border-radius: 14px; padding: 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.07);
+        display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center;
+        transition: all 0.2s; border: 2px solid transparent;
+    }
+    .role-card:hover { border-color: #0f3460; transform: translateY(-3px); }
+    .role-icon { font-size: 40px; }
+    .role-info { display: flex; flex-direction: column; gap: 4px; }
+    .role-name { font-size: 16px; font-weight: 600; color: #1a1a2e; }
+    .role-users { font-size: 12px; color: #888; }
+    .role-actions { margin-top: 8px; }
+
+    .system-badge { background: #e8f0fe; color: #1a73e8; font-size: 11px; padding: 3px 10px; border-radius: 20px; }
+    .btn-delete-role { background: #fdecea; color: #c00; border: none; border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
+    .btn-delete-role:hover { background: #f8bbbb; }
+
+    .role-add {
+        border: 2px dashed #ccc; cursor: pointer; color: #aaa;
+        background: #fafafa; transition: all 0.2s;
+    }
+    .role-add:hover { border-color: #0f3460; color: #0f3460; background: #f0f4ff; }
+    .add-icon { font-size: 36px; font-weight: 300; }
+
+    .info-box { background: #f0f7ff; border: 1px solid #bde0ff; border-radius: 12px; padding: 20px; }
+    .info-box h3 { font-size: 16px; font-weight: 600; margin-bottom: 12px; color: #1565c0; }
+    .info-box ul { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+    .info-box li { font-size: 13px; color: #444; padding-right: 8px; border-right: 2px solid #1a73e8; padding-right: 12px; }
+
+    .btn-primary { background: #0f3460; color: white; padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; }
+    .btn-primary:hover:not(:disabled) { background: #16213e; }
+    .btn-primary:disabled { opacity: 0.7; cursor: not-allowed; }
+    .btn-secondary { background: #f0f0f0; color: #333; padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
+
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+    .modal { background: white; border-radius: 16px; width: 400px; max-width: 95vw; overflow: hidden; }
+    .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 20px 24px; border-bottom: 1px solid #eee; }
+    .modal-header h3 { font-size: 18px; font-weight: 600; }
+    .modal-close { background: none; border: none; font-size: 18px; cursor: pointer; color: #888; }
+    .modal-body { padding: 24px; }
+    .modal-footer { display: flex; gap: 10px; padding: 16px 24px; border-top: 1px solid #eee; }
+    .form-row { display: flex; flex-direction: column; gap: 6px; }
+    .form-row label { font-size: 13px; font-weight: 500; }
+    .form-input { padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px; outline: none; width: 100%; }
+    .form-input:focus { border-color: #0f3460; }
+    .form-error { background: #fdecea; border: 1px solid #ffb3b3; color: #c00; border-radius: 8px; padding: 10px; font-size: 13px; margin-top: 12px; }
+</style>

@@ -1,0 +1,107 @@
+using MediatR;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using AccessControll.Application.Users;
+using AccessControll.Application.Roles;
+
+namespace AccessControll.API.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+[Authorize(Roles = "Admin")]
+public class UsersController : ControllerBase
+{
+    private readonly IMediator _mediator;
+    public UsersController(IMediator mediator) => _mediator = mediator;
+
+    [HttpGet]
+    public async Task<IActionResult> GetAll([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
+    {
+        var (users, total) = await _mediator.Send(new GetAllUsersQuery(page, pageSize));
+        return Ok(new { users, total, page, pageSize });
+    }
+
+    [HttpGet("{id}")]
+    public async Task<IActionResult> GetById(string id)
+    {
+        var user = await _mediator.Send(new GetUserByIdQuery(id));
+        return user == null ? NotFound() : Ok(user);
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> Create([FromBody] CreateUserRequest request)
+    {
+        var (succeeded, errors) = await _mediator.Send(
+            new CreateUserCommand(request.Email, request.FullName, request.Password, request.Roles));
+        return succeeded ? Ok(new { message = "کاربر ایجاد شد" }) : BadRequest(new { errors });
+    }
+
+    [HttpPut("{id}")]
+    public async Task<IActionResult> Update(string id, [FromBody] UpdateUserRequest request)
+    {
+        if (id != request.Id) return BadRequest();
+        var success = await _mediator.Send(new UpdateUserCommand(id, request.FullName, request.IsActive, request.Roles));
+        return success ? Ok() : NotFound();
+    }
+
+    [HttpDelete("{id}")]
+    public async Task<IActionResult> Delete(string id)
+    {
+        var success = await _mediator.Send(new DeleteUserCommand(id));
+        return success ? NoContent() : NotFound();
+    }
+
+    [HttpPost("{id}/toggle-active")]
+    public async Task<IActionResult> ToggleActive(string id)
+    {
+        var isNowActive = await _mediator.Send(new ToggleUserActiveCommand(id));
+        return Ok(new { isActive = isNowActive, message = isNowActive ? "کاربر فعال شد" : "کاربر غیرفعال شد" });
+    }
+}
+
+[ApiController]
+[Route("api/[controller]")]
+[Authorize(Roles = "Admin")]
+public class RolesController : ControllerBase
+{
+    private readonly IMediator _mediator;
+    public RolesController(IMediator mediator) => _mediator = mediator;
+
+    [HttpGet]
+    public async Task<IActionResult> GetAll()
+    {
+        var roles = await _mediator.Send(new GetAllRolesQuery());
+        return Ok(roles);
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> Create([FromBody] CreateRoleRequest request)
+    {
+        var (succeeded, error) = await _mediator.Send(new CreateRoleCommand(request.Name));
+        return succeeded ? Ok(new { message = "نقش ایجاد شد" }) : BadRequest(new { error });
+    }
+
+    [HttpDelete("{id}")]
+    public async Task<IActionResult> Delete(string id)
+    {
+        var (succeeded, error) = await _mediator.Send(new DeleteRoleCommand(id));
+        return succeeded ? NoContent() : BadRequest(new { error });
+    }
+
+    [HttpPost("assign")]
+    public async Task<IActionResult> AssignRole([FromBody] AssignRoleRequest request)
+    {
+        var success = await _mediator.Send(new AssignRoleToUserCommand(request.UserId, request.RoleName));
+        return success ? Ok() : BadRequest();
+    }
+
+    [HttpPost("remove")]
+    public async Task<IActionResult> RemoveRole([FromBody] AssignRoleRequest request)
+    {
+        var success = await _mediator.Send(new RemoveRoleFromUserCommand(request.UserId, request.RoleName));
+        return success ? Ok() : BadRequest();
+    }
+}
+
+public record CreateRoleRequest(string Name);
+public record AssignRoleRequest(string UserId, string RoleName);

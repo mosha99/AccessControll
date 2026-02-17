@@ -1,0 +1,274 @@
+@page "/doors"
+@using AccessControll.Blazor.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Roles = "Admin,DoorManager")]
+@inject IDoorService DoorService
+@inject DoorHubService HubService
+@implements IAsyncDisposable
+
+<PageTitle>مدیریت درها — MediaR</PageTitle>
+
+<div class="page" dir="rtl">
+    <div class="page-header">
+        <h1>🚪 مدیریت درها</h1>
+        <AuthorizeView Roles="Admin">
+            <Authorized>
+                <button class="btn-primary" @onclick="OpenCreateModal">+ در جدید</button>
+            </Authorized>
+        </AuthorizeView>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="alert @(_messageSuccess ? "alert-success" : "alert-error")">
+            @_message
+        </div>
+    }
+
+    <div class="doors-grid">
+        @foreach (var door in _doors)
+        {
+            <div class="door-card @(door.IsLocked ? "locked" : "unlocked") @(!door.IsEnabled ? "disabled" : "")">
+                <div class="door-header">
+                    <span class="door-icon">@(door.IsLocked ? "🔒" : "🔓")</span>
+                    <div class="door-status-indicator @(door.IsEnabled ? "" : "inactive")">
+                        @(door.IsEnabled ? (door.IsLocked ? "قفل" : "باز") : "غیرفعال")
+                    </div>
+                </div>
+                <div class="door-body">
+                    <h3>@door.Name</h3>
+                    <p class="door-desc">@door.Description</p>
+                    <p class="door-location">📍 @door.Location</p>
+                    @if (!string.IsNullOrEmpty(door.HardwareId))
+                    {
+                        <p class="door-hw">⚙️ @door.HardwareId</p>
+                    }
+                </div>
+                <div class="door-footer">
+                    <div class="control-buttons">
+                        <button class="btn-open @(!door.IsEnabled || !door.IsLocked ? "btn-disabled" : "")"
+                                disabled="@(!door.IsEnabled || !door.IsLocked)"
+                                @onclick="@(() => ControlDoor(door.Id, false))">
+                            🔓 باز
+                        </button>
+                        <button class="btn-lock @(!door.IsEnabled || door.IsLocked ? "btn-disabled" : "")"
+                                disabled="@(!door.IsEnabled || door.IsLocked)"
+                                @onclick="@(() => ControlDoor(door.Id, true))">
+                            🔒 قفل
+                        </button>
+                    </div>
+                    <AuthorizeView Roles="Admin">
+                        <Authorized>
+                            <div class="admin-actions">
+                                <button class="btn-icon" @onclick="@(() => OpenEditModal(door))" title="ویرایش">✏️</button>
+                                <button class="btn-icon btn-del" @onclick="@(() => DeleteDoor(door.Id))" title="حذف">🗑️</button>
+                            </div>
+                        </Authorized>
+                    </AuthorizeView>
+                </div>
+            </div>
+        }
+    </div>
+</div>
+
+@if (_showModal)
+{
+    <div class="modal-overlay" @onclick="CloseModal">
+        <div class="modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h3>@(_editingDoor == null ? "افزودن در جدید" : "ویرایش در")</h3>
+                <button class="modal-close" @onclick="CloseModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-row">
+                    <label>نام در</label>
+                    <input type="text" @bind="_form.Name" class="form-input" placeholder="مثلاً: در ورودی اصلی" />
+                </div>
+                <div class="form-row">
+                    <label>توضیحات</label>
+                    <input type="text" @bind="_form.Description" class="form-input" placeholder="توضیحات اختیاری" />
+                </div>
+                <div class="form-row">
+                    <label>مکان</label>
+                    <input type="text" @bind="_form.Location" class="form-input" placeholder="مثلاً: طبقه اول، سالن اصلی" />
+                </div>
+                <div class="form-row">
+                    <label>شناسه سخت‌افزار (اختیاری)</label>
+                    <input type="text" @bind="_form.HardwareId" class="form-input" placeholder="DOOR-001" dir="ltr" />
+                </div>
+                @if (_editingDoor != null)
+                {
+                    <div class="form-row">
+                        <label>وضعیت</label>
+                        <label class="toggle">
+                            <input type="checkbox" @bind="_form.IsEnabled" />
+                            <span class="toggle-slider"></span>
+                            <span>@(_form.IsEnabled ? "فعال" : "غیرفعال")</span>
+                        </label>
+                    </div>
+                }
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" @onclick="CloseModal">انصراف</button>
+                <button class="btn-primary" @onclick="SaveDoor" disabled="@_saving">
+                    @(_saving ? "ذخیره..." : "ذخیره")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<DoorDto> _doors = new();
+    private bool _showModal, _saving;
+    private string _message = "";
+    private bool _messageSuccess = false;
+    private DoorDto? _editingDoor;
+    private DoorFormModel _form = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDoors();
+        HubService.OnDoorStatusChanged += OnDoorStatusChanged;
+        await HubService.StartAsync();
+    }
+
+    private async Task LoadDoors() => _doors = await DoorService.GetAllAsync();
+
+    private void OnDoorStatusChanged(DoorStatusChanged status)
+    {
+        var door = _doors.FirstOrDefault(d => d.Id == status.DoorId);
+        if (door != null)
+        {
+            var idx = _doors.IndexOf(door);
+            _doors[idx] = door with { IsLocked = status.IsLocked };
+            InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task ControlDoor(Guid doorId, bool lock_)
+    {
+        var (success, msg) = await DoorService.ControlDoorAsync(doorId, lock_);
+        _message = msg;
+        _messageSuccess = success;
+        StateHasChanged();
+        await Task.Delay(3000);
+        _message = "";
+        StateHasChanged();
+    }
+
+    private void OpenCreateModal() { _editingDoor = null; _form = new DoorFormModel { IsEnabled = true }; _showModal = true; }
+
+    private void OpenEditModal(DoorDto door)
+    {
+        _editingDoor = door;
+        _form = new DoorFormModel { Name = door.Name, Description = door.Description, Location = door.Location, HardwareId = door.HardwareId, IsEnabled = door.IsEnabled };
+        _showModal = true;
+    }
+
+    private async Task SaveDoor()
+    {
+        _saving = true;
+        if (_editingDoor == null)
+            await DoorService.CreateAsync(_form.Name, _form.Description, _form.Location, _form.HardwareId);
+        else
+            await DoorService.UpdateAsync(_editingDoor.Id, _form.Name, _form.Description, _form.Location, _form.IsEnabled, _form.HardwareId);
+        CloseModal();
+        await LoadDoors();
+        _saving = false;
+    }
+
+    private async Task DeleteDoor(Guid id) { await DoorService.DeleteAsync(id); await LoadDoors(); }
+    private void CloseModal() { _showModal = false; }
+
+    public async ValueTask DisposeAsync()
+    {
+        HubService.OnDoorStatusChanged -= OnDoorStatusChanged;
+        await HubService.StopAsync();
+    }
+
+    private class DoorFormModel
+    {
+        public string Name { get; set; } = "";
+        public string Description { get; set; } = "";
+        public string Location { get; set; } = "";
+        public string? HardwareId { get; set; }
+        public bool IsEnabled { get; set; } = true;
+    }
+}
+
+<style>
+    .page { direction: rtl; }
+    .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+    .page-header h1 { font-size: 24px; font-weight: 700; color: #1a1a2e; }
+
+    .alert { padding: 12px 18px; border-radius: 10px; margin-bottom: 16px; font-size: 14px; font-weight: 500; }
+    .alert-success { background: #d4edda; color: #1a7a3c; border: 1px solid #a8ddb8; }
+    .alert-error { background: #fdecea; color: #c00; border: 1px solid #f8bbbb; }
+
+    .doors-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }
+
+    .door-card {
+        background: white; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+        border: 2px solid transparent; transition: all 0.3s;
+    }
+    .door-card:hover { transform: translateY(-4px); box-shadow: 0 8px 30px rgba(0,0,0,0.12); }
+    .door-card.unlocked { border-color: #27ae60; }
+    .door-card.locked { border-color: #e74c3c; }
+    .door-card.disabled { border-color: #ccc; opacity: 0.65; }
+
+    .door-header {
+        display: flex; justify-content: space-between; align-items: center;
+        padding: 16px 18px; background: #f8f9fa; border-bottom: 1px solid #f0f0f0;
+    }
+    .door-icon { font-size: 28px; }
+    .door-status-indicator { font-size: 12px; font-weight: 600; padding: 4px 12px; border-radius: 20px; background: #fdecea; color: #c00; }
+    .unlocked .door-status-indicator { background: #d4edda; color: #1a7a3c; }
+    .inactive { background: #f0f0f0 !important; color: #888 !important; }
+
+    .door-body { padding: 18px; }
+    .door-body h3 { font-size: 17px; font-weight: 600; color: #1a1a2e; margin-bottom: 6px; }
+    .door-desc { color: #777; font-size: 13px; margin-bottom: 8px; }
+    .door-location, .door-hw { font-size: 12px; color: #888; margin-bottom: 4px; }
+
+    .door-footer { padding: 14px 18px; border-top: 1px solid #f5f5f5; display: flex; justify-content: space-between; align-items: center; }
+    .control-buttons { display: flex; gap: 8px; }
+    .btn-open, .btn-lock {
+        padding: 8px 16px; border: none; border-radius: 8px; font-size: 13px;
+        font-weight: 500; cursor: pointer; transition: all 0.2s;
+    }
+    .btn-open { background: #27ae60; color: white; }
+    .btn-open:hover:not(:disabled) { background: #229954; }
+    .btn-lock { background: #e74c3c; color: white; }
+    .btn-lock:hover:not(:disabled) { background: #c0392b; }
+    .btn-disabled, :disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .admin-actions { display: flex; gap: 6px; }
+    .btn-icon { background: #f0f0f0; border: none; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 14px; }
+    .btn-icon:hover { background: #e0e0e0; }
+    .btn-del { background: #fdecea; }
+    .btn-del:hover { background: #f8bbbb; }
+
+    .btn-primary { background: #0f3460; color: white; padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; }
+    .btn-primary:disabled { opacity: 0.7; cursor: not-allowed; }
+    .btn-secondary { background: #f0f0f0; color: #333; padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
+
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+    .modal { background: white; border-radius: 16px; width: 460px; max-width: 95vw; overflow: hidden; }
+    .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 20px 24px; border-bottom: 1px solid #eee; }
+    .modal-header h3 { font-size: 18px; font-weight: 600; }
+    .modal-close { background: none; border: none; font-size: 18px; cursor: pointer; color: #888; }
+    .modal-body { padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+    .modal-footer { display: flex; gap: 10px; padding: 16px 24px; border-top: 1px solid #eee; }
+    .form-row { display: flex; flex-direction: column; gap: 6px; }
+    .form-row label { font-size: 13px; font-weight: 500; }
+    .form-input { padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px; outline: none; width: 100%; }
+    .form-input:focus { border-color: #0f3460; }
+
+    .toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+    .toggle input { display: none; }
+    .toggle-slider { width: 44px; height: 24px; background: #ccc; border-radius: 12px; position: relative; transition: background 0.2s; }
+    .toggle input:checked + .toggle-slider { background: #27ae60; }
+    .toggle-slider::after { content: ''; position: absolute; width: 18px; height: 18px; background: white; border-radius: 50%; top: 3px; right: 3px; transition: transform 0.2s; }
+    .toggle input:checked + .toggle-slider::after { transform: translateX(-20px); }
+</style>

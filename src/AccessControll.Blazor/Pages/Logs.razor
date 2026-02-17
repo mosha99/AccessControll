@@ -1,0 +1,207 @@
+@page "/logs"
+@using AccessControll.Blazor.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Roles = "Admin,DoorManager")]
+@inject ILogService LogService
+@inject IDoorService DoorService
+
+<PageTitle>لاگ دسترسی — MediaR</PageTitle>
+
+<div class="page" dir="rtl">
+    <div class="page-header">
+        <h1>📋 لاگ دسترسی درها</h1>
+        <div class="header-actions">
+            <span class="total-badge">مجموع: @_total رکورد</span>
+        </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="filters-card">
+        <div class="filters-grid">
+            <div class="filter-group">
+                <label>در</label>
+                <select @bind="_filterDoorId" class="filter-select">
+                    <option value="">همه درها</option>
+                    @foreach (var door in _doors)
+                    {
+                        <option value="@door.Id">@door.Name</option>
+                    }
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>از تاریخ</label>
+                <input type="date" @bind="_filterFrom" class="filter-input" />
+            </div>
+            <div class="filter-group">
+                <label>تا تاریخ</label>
+                <input type="date" @bind="_filterTo" class="filter-input" />
+            </div>
+            <div class="filter-actions">
+                <button class="btn-filter" @onclick="ApplyFilters">🔍 فیلتر</button>
+                <button class="btn-reset" @onclick="ResetFilters">↺ ریست</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Table -->
+    <div class="card">
+        @if (_loading)
+        {
+            <div class="loading">در حال بارگذاری...</div>
+        }
+        else if (!_logs.Any())
+        {
+            <div class="empty">📭 هیچ رکوردی یافت نشد</div>
+        }
+        else
+        {
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>در</th>
+                        <th>کاربر</th>
+                        <th>ایمیل</th>
+                        <th>عملیات</th>
+                        <th>نتیجه</th>
+                        <th>IP</th>
+                        <th>زمان</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var log in _logs)
+                    {
+                        <tr class="@(log.Result == "Success" ? "row-success" : "row-fail")">
+                            <td>
+                                <span class="door-name-cell">🚪 @log.DoorName</span>
+                            </td>
+                            <td><strong>@log.UserFullName</strong></td>
+                            <td class="email-cell">@log.UserEmail</td>
+                            <td>
+                                <span class="action-badge action-@log.Action.ToLower()">
+                                    @GetActionIcon(log.Action) @GetActionLabel(log.Action)
+                                </span>
+                            </td>
+                            <td>
+                                <span class="result-badge @(log.Result == "Success" ? "result-success" : "result-fail")">
+                                    @GetResultLabel(log.Result)
+                                </span>
+                            </td>
+                            <td class="ip-cell">@(log.IpAddress ?? "—")</td>
+                            <td class="time-cell">
+                                <span class="time-main">@log.AccessedAt.ToLocalTime().ToString("HH:mm:ss")</span>
+                                <span class="time-date">@log.AccessedAt.ToLocalTime().ToString("yyyy/MM/dd")</span>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+
+            <div class="pagination">
+                <button @onclick="PrevPage" disabled="@(_page == 1)">← قبلی</button>
+                <span>صفحه @_page از @_totalPages</span>
+                <button @onclick="NextPage" disabled="@(_page >= _totalPages)">بعدی →</button>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private List<DoorLogDto> _logs = new();
+    private List<DoorDto> _doors = new();
+    private bool _loading = true;
+    private int _page = 1, _pageSize = 25, _total, _totalPages;
+
+    private string? _filterDoorId;
+    private DateTime? _filterFrom, _filterTo;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _doors = await DoorService.GetAllAsync();
+        await LoadLogs();
+    }
+
+    private async Task LoadLogs()
+    {
+        _loading = true;
+        Guid? doorId = Guid.TryParse(_filterDoorId, out var g) ? g : null;
+        var result = await LogService.GetLogsAsync(doorId, null, _filterFrom, _filterTo, _page, _pageSize);
+        _logs = result.Items.ToList();
+        _total = result.Total;
+        _totalPages = (int)Math.Ceiling((double)_total / _pageSize);
+        _loading = false;
+    }
+
+    private async Task ApplyFilters() { _page = 1; await LoadLogs(); }
+    private async Task ResetFilters() { _filterDoorId = null; _filterFrom = null; _filterTo = null; _page = 1; await LoadLogs(); }
+    private async Task PrevPage() { if (_page > 1) { _page--; await LoadLogs(); } }
+    private async Task NextPage() { if (_page < _totalPages) { _page++; await LoadLogs(); } }
+
+    private static string GetActionIcon(string action) => action switch
+    {
+        "Unlock" => "🔓", "Lock" => "🔒", "Open" => "🚪",
+        "Close" => "🚫", "ForceOpen" => "⚡", _ => "•"
+    };
+
+    private static string GetActionLabel(string action) => action switch
+    {
+        "Unlock" => "باز کردن", "Lock" => "قفل", "Open" => "ورود",
+        "Close" => "بستن", "ForceOpen" => "اجباری", _ => action
+    };
+
+    private static string GetResultLabel(string result) => result switch
+    {
+        "Success" => "✓ موفق", "Denied" => "✗ رد شد",
+        "NoPermission" => "⊘ بدون دسترسی", "DoorDisabled" => "⊘ در غیرفعال",
+        "OutsideAllowedHours" => "⏰ خارج از ساعت", "SystemError" => "⚠ خطا", _ => result
+    };
+}
+
+<style>
+    .page { direction: rtl; }
+    .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+    .page-header h1 { font-size: 24px; font-weight: 700; color: #1a1a2e; }
+    .total-badge { background: #e8f0fe; color: #1a73e8; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 500; }
+
+    .filters-card { background: white; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 12px rgba(0,0,0,0.07); }
+    .filters-grid { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; }
+    .filter-group { display: flex; flex-direction: column; gap: 5px; min-width: 160px; }
+    .filter-group label { font-size: 12px; font-weight: 500; color: #555; }
+    .filter-select, .filter-input {
+        padding: 9px 12px; border: 2px solid #e0e0e0; border-radius: 8px;
+        font-size: 14px; outline: none; background: white;
+    }
+    .filter-select:focus, .filter-input:focus { border-color: #0f3460; }
+    .filter-actions { display: flex; gap: 8px; }
+    .btn-filter { background: #0f3460; color: white; padding: 9px 18px; border: none; border-radius: 8px; font-size: 13px; cursor: pointer; }
+    .btn-reset { background: #f0f0f0; color: #333; padding: 9px 14px; border: none; border-radius: 8px; font-size: 13px; cursor: pointer; }
+
+    .card { background: white; border-radius: 14px; box-shadow: 0 2px 12px rgba(0,0,0,0.07); overflow: hidden; }
+    .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .data-table th { background: #f0f4ff; padding: 13px 14px; text-align: right; font-weight: 600; color: #333; border-bottom: 2px solid #e8e8e8; }
+    .data-table td { padding: 11px 14px; border-bottom: 1px solid #f5f5f5; vertical-align: middle; }
+    .row-success td { background: #fafffc; }
+    .row-fail td { background: #fff9f9; }
+    .row-success:hover td { background: #f0fff4 !important; }
+    .row-fail:hover td { background: #fff5f5 !important; }
+
+    .door-name-cell { font-weight: 500; color: #333; }
+    .email-cell { color: #666; font-size: 12px; direction: ltr; }
+    .ip-cell { font-family: monospace; font-size: 12px; color: #888; direction: ltr; }
+    .time-cell { display: flex; flex-direction: column; gap: 2px; }
+    .time-main { font-weight: 600; font-size: 13px; color: #333; direction: ltr; }
+    .time-date { font-size: 11px; color: #999; }
+
+    .action-badge { font-size: 12px; padding: 3px 10px; border-radius: 20px; background: #f0f0f0; color: #555; }
+    .action-unlock { background: #e6f7ec; color: #1a7a3c; }
+    .action-lock { background: #fdecea; color: #c00; }
+    .action-forceopen { background: #fff3cd; color: #856404; }
+
+    .result-badge { font-size: 12px; padding: 3px 10px; border-radius: 20px; font-weight: 500; }
+    .result-success { background: #d4edda; color: #1a7a3c; }
+    .result-fail { background: #fdecea; color: #c00; }
+
+    .pagination { display: flex; justify-content: center; align-items: center; gap: 16px; padding: 16px; font-size: 14px; }
+    .pagination button { padding: 7px 16px; border: 1px solid #ddd; border-radius: 6px; background: white; cursor: pointer; }
+    .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .loading, .empty { padding: 50px; text-align: center; color: #888; font-size: 15px; }
+</style>

@@ -14,4 +14,5 @@ public class Door
 
     public virtual ICollection<DoorAccessLog> AccessLogs { get; set; } = new List<DoorAccessLog>();
     public virtual ICollection<UserDoorPermission> UserPermissions { get; set; } = new List<UserDoorPermission>();
+    public int Code { get; set; }
 }

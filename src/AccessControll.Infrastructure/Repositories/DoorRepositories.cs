@@ -17,6 +17,9 @@ public class DoorRepository : IDoorRepository
     public async Task<Door?> GetByIdAsync(Guid id)
         => await _context.Doors.FindAsync(id);
 
+    public async Task<Door?> GetByCodeAsync(int code)
+        => await _context.Doors.FirstOrDefaultAsync(x=>x.Code == code);
+
     public async Task<Door> CreateAsync(Door door)
     {
         _context.Doors.Add(door);
@@ -99,7 +102,15 @@ public class UserDoorPermissionRepository : IUserDoorPermissionRepository
     public async Task<IEnumerable<UserDoorPermission>> GetUserPermissionsAsync(string userId)
         => await _context.UserDoorPermissions
             .Include(p => p.Door)
+            .Include(p => p.User)
             .Where(p => p.UserId == userId)
+            .ToListAsync();
+
+    public async Task<IEnumerable<UserDoorPermission>> GetDoorPermissionsAsync(Guid doorId)
+        => await _context.UserDoorPermissions
+            .Include(p => p.User)
+            .Include(p => p.Door)
+            .Where(p => p.DoorId == doorId)
             .ToListAsync();
 
     public async Task<UserDoorPermission?> GetPermissionAsync(string userId, Guid doorId)

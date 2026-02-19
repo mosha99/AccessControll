@@ -1,26 +1,31 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Components.Authorization;
+using AccessControll.Contracts.Auth;
+using AccessControll.Contracts.Doors;
+using AccessControll.Contracts.Users;
+using AccessControll.Contracts.Roles;
+using AccessControll.Contracts.Common;
 
 namespace AccessControll.Blazor.Services;
 
-// ── DTOs ──────────────────────────────────────────────────────────────────────
+// ── Shared JSON options ───────────────────────────────────────────────────────
 
-public record LoginResult(bool Succeeded, string? Token, bool RequiresTwoFactor, string? Error);
-public record DoorDto(Guid Id, string Name, string Description, string Location, bool IsLocked, bool IsEnabled, string? HardwareId, DateTime CreatedAt);
-public record DoorLogDto(Guid Id, string DoorName, string UserFullName, string UserEmail, DateTime AccessedAt, string Action, string Result, string? IpAddress, string? Notes);
-public record UserDto(string Id, string Email, string FullName, bool IsActive, bool TwoFactorEnabled, DateTime CreatedAt, DateTime? LastLoginAt, List<string> Roles);
-public record RoleDto(string Id, string Name, int UsersCount);
-public record PagedResult<T>(IEnumerable<T> Items, int Total, int Page, int PageSize);
+internal static class JsonOptions
+{
+    public static readonly JsonSerializerOptions CaseInsensitive = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+}
 
 // ── Auth Service ──────────────────────────────────────────────────────────────
 
 public interface IAuthService
 {
-    Task<LoginResult> LoginAsync(string email, string password, string? twoFactorCode = null);
+    Task<LoginResponse> LoginAsync(string email, string password, string? twoFactorCode = null);
+    Task<LoginResponse> Login2FAAsync(string totpCode);
     Task LogoutAsync();
-    Task<bool> Setup2FAAsync();
-    Task<bool> Verify2FAAsync(string code);
 }
 
 public class AuthService : IAuthService
@@ -34,38 +39,98 @@ public class AuthService : IAuthService
         _authState = (JwtAuthStateProvider)authState;
     }
 
-    public async Task<LoginResult> LoginAsync(string email, string password, string? twoFactorCode = null)
+    public async Task<LoginResponse> LoginAsync(string email, string password, string? twoFactorCode = null)
     {
-        var response = await _http.PostAsJsonAsync("api/auth/login", new { email, password, twoFactorCode });
+        var response = await _http.PostAsJsonAsync("api/auth/login", new LoginRequest(email, password, twoFactorCode));
         if (response.IsSuccessStatusCode)
         {
             var json = await response.Content.ReadFromJsonAsync<JsonElement>();
             if (json.TryGetProperty("requiresTwoFactor", out var tf) && tf.GetBoolean())
-                return new LoginResult(false, null, true, null);
+                return new LoginResponse(false, RequiresTwoFactor: true);
             var token = json.GetProperty("token").GetString()!;
             await _authState.NotifyLogin(token);
-            return new LoginResult(true, token, false, null);
+            return new LoginResponse(true, token);
         }
         var err = await response.Content.ReadFromJsonAsync<JsonElement>();
-        return new LoginResult(false, null, false, err.TryGetProperty("message", out var m) ? m.GetString() : "خطا");
+        return new LoginResponse(false, Error: err.TryGetProperty("message", out var m) ? m.GetString() : "خطا در ورود");
+    }
+
+    public async Task<LoginResponse> Login2FAAsync(string totpCode)
+    {
+        var response = await _http.PostAsJsonAsync("api/auth/login/2fa", new Login2FARequest(totpCode));
+        if (response.IsSuccessStatusCode)
+        {
+            var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+            var token = json.GetProperty("token").GetString()!;
+            await _authState.NotifyLogin(token);
+            return new LoginResponse(true, token);
+        }
+        var err = await response.Content.ReadFromJsonAsync<JsonElement>();
+        return new LoginResponse(false, Error: err.TryGetProperty("message", out var m) ? m.GetString() : "کد نامعتبر");
     }
 
     public async Task LogoutAsync()
     {
-        await _http.PostAsync("api/auth/logout", null);
+        try { await _http.PostAsync("api/auth/logout", null); } catch { }
         await _authState.NotifyLogout();
     }
+}
 
-    public async Task<bool> Setup2FAAsync()
+// ── Profile Service ───────────────────────────────────────────────────────────
+
+public interface IProfileService
+{
+    Task<ProfileDto?> GetAsync();
+    Task<ProfileDto?> UpdateAsync(string fullName);
+    Task<(bool Success, string? Error)> ChangePasswordAsync(string currentPassword, string newPassword);
+    Task<TwoFactorSetupResponse?> Setup2FAAsync();
+    Task<bool> Verify2FAAsync(string code);
+    Task<bool> Disable2FAAsync();
+}
+
+public class ProfileService : IProfileService
+{
+    private readonly HttpClient _http;
+    public ProfileService(HttpClient http) => _http = http;
+
+    public async Task<ProfileDto?> GetAsync() =>
+        await _http.GetFromJsonAsync<ProfileDto>("api/profile", JsonOptions.CaseInsensitive);
+
+    public async Task<ProfileDto?> UpdateAsync(string fullName)
     {
-        var response = await _http.PostAsync("api/auth/2fa/setup", null);
-        return response.IsSuccessStatusCode;
+        var r = await _http.PutAsJsonAsync("api/profile", new UpdateProfileRequest(fullName));
+        return r.IsSuccessStatusCode
+            ? await r.Content.ReadFromJsonAsync<ProfileDto>(JsonOptions.CaseInsensitive)
+            : null;
+    }
+
+    public async Task<(bool Success, string? Error)> ChangePasswordAsync(string currentPassword, string newPassword)
+    {
+        var r = await _http.PostAsJsonAsync("api/profile/change-password",
+            new ChangePasswordRequest(currentPassword, newPassword));
+        if (r.IsSuccessStatusCode) return (true, null);
+        var json = await r.Content.ReadFromJsonAsync<JsonElement>();
+        return (false, json.TryGetProperty("message", out var m) ? m.GetString() : "خطا در تغییر رمز");
+    }
+
+    public async Task<TwoFactorSetupResponse?> Setup2FAAsync()
+    {
+        var r = await _http.PostAsync("api/profile/2fa/setup", null);
+        return r.IsSuccessStatusCode
+            ? await r.Content.ReadFromJsonAsync<TwoFactorSetupResponse>(JsonOptions.CaseInsensitive)
+            : null;
     }
 
     public async Task<bool> Verify2FAAsync(string code)
     {
-        var response = await _http.PostAsJsonAsync("api/auth/2fa/verify", new { code });
-        return response.IsSuccessStatusCode;
+        var r = await _http.PostAsJsonAsync("api/profile/2fa/verify", new { code });
+        return r.IsSuccessStatusCode;
+    }
+
+    public async Task<bool> Disable2FAAsync()
+    {
+        var r = await _http.PostAsync("api/profile/2fa/disable", null);
+        return r.IsSuccessStatusCode;
     }
 }
 
@@ -75,11 +140,14 @@ public interface IDoorService
 {
     Task<List<DoorDto>> GetAllAsync();
     Task<DoorDto?> GetByIdAsync(Guid id);
-    Task<DoorDto?> CreateAsync(string name, string description, string location, string? hardwareId);
-    Task<DoorDto?> UpdateAsync(Guid id, string name, string description, string location, bool isEnabled, string? hardwareId);
+    Task<DoorDto?> CreateAsync(string name, int code, string description, string location, string? hardwareId);
+    Task<DoorDto?> UpdateAsync(Guid id, string name, int code, string description, string location, bool isEnabled, string? hardwareId);
     Task DeleteAsync(Guid id);
-    Task<(bool success, string message)> ControlDoorAsync(Guid doorId, bool lock_);
-    Task<PagedResult<DoorLogDto>> GetLogsAsync(Guid? doorId = null, string? userId = null, DateTime? from = null, DateTime? to = null, int page = 1, int pageSize = 20);
+    Task<(bool Success, string Message)> ControlDoorAsync(Guid doorId, bool lockDoor);
+    Task<PagedResult<DoorAccessLogDto>> GetLogsAsync(Guid? doorId = null, string? userId = null, DateTime? from = null, DateTime? to = null, int page = 1, int pageSize = 25);
+    Task<List<UserPermissionDto>> GetPermissionsAsync(Guid doorId);
+    Task<bool> GrantPermissionAsync(Guid doorId, string userId, bool canOpen, bool canLock, TimeSpan? fromTime, TimeSpan? toTime);
+    Task<bool> RevokePermissionAsync(Guid doorId, string userId);
 }
 
 public class DoorService : IDoorService
@@ -88,46 +156,62 @@ public class DoorService : IDoorService
     public DoorService(HttpClient http) => _http = http;
 
     public async Task<List<DoorDto>> GetAllAsync() =>
-        await _http.GetFromJsonAsync<List<DoorDto>>("api/doors") ?? new();
+        await _http.GetFromJsonAsync<List<DoorDto>>("api/doors", JsonOptions.CaseInsensitive) ?? new();
 
     public async Task<DoorDto?> GetByIdAsync(Guid id) =>
-        await _http.GetFromJsonAsync<DoorDto>($"api/doors/{id}");
+        await _http.GetFromJsonAsync<DoorDto>($"api/doors/{id}", JsonOptions.CaseInsensitive);
 
-    public async Task<DoorDto?> CreateAsync(string name, string description, string location, string? hardwareId)
+    public async Task<DoorDto?> CreateAsync(string name, int code, string description, string location, string? hardwareId)
     {
-        var r = await _http.PostAsJsonAsync("api/doors", new { name, description, location, hardwareId });
-        return r.IsSuccessStatusCode ? await r.Content.ReadFromJsonAsync<DoorDto>() : null;
+        var r = await _http.PostAsJsonAsync("api/doors", new { name, code, description, location, hardwareId });
+        return r.IsSuccessStatusCode ? await r.Content.ReadFromJsonAsync<DoorDto>(JsonOptions.CaseInsensitive) : null;
     }
 
-    public async Task<DoorDto?> UpdateAsync(Guid id, string name, string description, string location, bool isEnabled, string? hardwareId)
+    public async Task<DoorDto?> UpdateAsync(Guid id, string name, int code, string description, string location, bool isEnabled, string? hardwareId)
     {
-        var r = await _http.PutAsJsonAsync($"api/doors/{id}", new { id, name, description, location, isEnabled, hardwareId });
-        return r.IsSuccessStatusCode ? await r.Content.ReadFromJsonAsync<DoorDto>() : null;
+        var r = await _http.PutAsJsonAsync($"api/doors/{id}", new { id, name, code, description, location, isEnabled, hardwareId });
+        return r.IsSuccessStatusCode ? await r.Content.ReadFromJsonAsync<DoorDto>(JsonOptions.CaseInsensitive) : null;
     }
 
     public async Task DeleteAsync(Guid id) => await _http.DeleteAsync($"api/doors/{id}");
 
-    public async Task<(bool success, string message)> ControlDoorAsync(Guid doorId, bool lock_)
+    public async Task<(bool Success, string Message)> ControlDoorAsync(Guid doorId, bool lockDoor)
     {
-        var r = await _http.PostAsJsonAsync($"api/doors/{doorId}/control", new { lock_ });
+        var r = await _http.PostAsJsonAsync($"api/doors/{doorId}/control", new { Lock = lockDoor });
         var json = await r.Content.ReadFromJsonAsync<JsonElement>();
         var msg = json.TryGetProperty("message", out var m) ? m.GetString() ?? "" : "";
         return (r.IsSuccessStatusCode, msg);
     }
 
-    public async Task<PagedResult<DoorLogDto>> GetLogsAsync(Guid? doorId = null, string? userId = null,
-        DateTime? from = null, DateTime? to = null, int page = 1, int pageSize = 20)
+    public async Task<PagedResult<DoorAccessLogDto>> GetLogsAsync(Guid? doorId = null, string? userId = null,
+        DateTime? from = null, DateTime? to = null, int page = 1, int pageSize = 25)
     {
         var url = $"api/doors/logs?page={page}&pageSize={pageSize}";
         if (doorId.HasValue) url += $"&doorId={doorId}";
-        if (!string.IsNullOrEmpty(userId)) url += $"&userId={userId}";
-        if (from.HasValue) url += $"&from={from:O}";
-        if (to.HasValue) url += $"&to={to:O}";
+        if (!string.IsNullOrEmpty(userId)) url += $"&userId={Uri.EscapeDataString(userId)}";
+        if (from.HasValue) url += $"&from={from.Value:O}";
+        if (to.HasValue) url += $"&to={to.Value:O}";
 
         var json = await _http.GetFromJsonAsync<JsonElement>(url);
-        var items = json.GetProperty("items").Deserialize<List<DoorLogDto>>() ?? new();
+        var items = json.GetProperty("items").Deserialize<List<DoorAccessLogDto>>(JsonOptions.CaseInsensitive) ?? new();
         var total = json.GetProperty("total").GetInt32();
-        return new PagedResult<DoorLogDto>(items, total, page, pageSize);
+        return new PagedResult<DoorAccessLogDto>(items, total, page, pageSize);
+    }
+
+    public async Task<List<UserPermissionDto>> GetPermissionsAsync(Guid doorId) =>
+        await _http.GetFromJsonAsync<List<UserPermissionDto>>($"api/doors/{doorId}/permissions", JsonOptions.CaseInsensitive) ?? new();
+
+    public async Task<bool> GrantPermissionAsync(Guid doorId, string userId, bool canOpen, bool canLock, TimeSpan? fromTime, TimeSpan? toTime)
+    {
+        var r = await _http.PostAsJsonAsync($"api/doors/{doorId}/permissions",
+            new GrantPermissionRequest(userId, canOpen, canLock, fromTime, toTime));
+        return r.IsSuccessStatusCode;
+    }
+
+    public async Task<bool> RevokePermissionAsync(Guid doorId, string userId)
+    {
+        var r = await _http.DeleteAsync($"api/doors/{doorId}/permissions/{userId}");
+        return r.IsSuccessStatusCode;
     }
 }
 
@@ -137,7 +221,8 @@ public interface IUserService
 {
     Task<PagedResult<UserDto>> GetAllAsync(int page = 1, int pageSize = 20);
     Task<UserDto?> GetByIdAsync(string id);
-    Task<(bool success, List<string> errors)> CreateAsync(string email, string fullName, string password, List<string> roles);
+    Task<List<UserPermissionDto>> GetPermissionsAsync(string userId);
+    Task<(bool Success, List<string> Errors)> CreateAsync(string email, string fullName, string password, List<string> roles);
     Task<bool> UpdateAsync(string id, string fullName, bool isActive, List<string> roles);
     Task<bool> DeleteAsync(string id);
     Task<bool> ToggleActiveAsync(string id);
@@ -150,32 +235,32 @@ public class UserService : IUserService
 
     public async Task<PagedResult<UserDto>> GetAllAsync(int page = 1, int pageSize = 20)
     {
-        // تعریف تنظیمات برای درک حروف کوچک در JSON
-        var options = new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true, // یا استفاده از PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-        };
         var json = await _http.GetFromJsonAsync<JsonElement>($"api/users?page={page}&pageSize={pageSize}");
-        var users = json.GetProperty("users").Deserialize<List<UserDto>>(options) ?? new();
+        var users = json.GetProperty("users").Deserialize<List<UserDto>>(JsonOptions.CaseInsensitive) ?? new();
         var total = json.GetProperty("total").GetInt32();
         return new PagedResult<UserDto>(users, total, page, pageSize);
     }
 
     public async Task<UserDto?> GetByIdAsync(string id) =>
-        await _http.GetFromJsonAsync<UserDto>($"api/users/{id}");
+        await _http.GetFromJsonAsync<UserDto>($"api/users/{id}", JsonOptions.CaseInsensitive);
 
-    public async Task<(bool success, List<string> errors)> CreateAsync(string email, string fullName, string password, List<string> roles)
+    public async Task<List<UserPermissionDto>> GetPermissionsAsync(string userId) =>
+        await _http.GetFromJsonAsync<List<UserPermissionDto>>($"api/users/{userId}/permissions", JsonOptions.CaseInsensitive) ?? new();
+
+    public async Task<(bool Success, List<string> Errors)> CreateAsync(string email, string fullName, string password, List<string> roles)
     {
-        var r = await _http.PostAsJsonAsync("api/users", new { email, fullName, password, roles });
+        var r = await _http.PostAsJsonAsync("api/users", new CreateUserRequest(email, fullName, password, roles));
         if (r.IsSuccessStatusCode) return (true, new());
         var json = await r.Content.ReadFromJsonAsync<JsonElement>();
-        var errors = json.TryGetProperty("errors", out var e) ? e.Deserialize<List<string>>() ?? new() : new();
+        var errors = json.TryGetProperty("errors", out var e)
+            ? e.Deserialize<List<string>>() ?? new()
+            : new List<string> { "خطای ناشناخته" };
         return (false, errors);
     }
 
     public async Task<bool> UpdateAsync(string id, string fullName, bool isActive, List<string> roles)
     {
-        var r = await _http.PutAsJsonAsync($"api/users/{id}", new { id, fullName, isActive, roles });
+        var r = await _http.PutAsJsonAsync($"api/users/{id}", new UpdateUserRequest(fullName, isActive, roles));
         return r.IsSuccessStatusCode;
     }
 
@@ -209,11 +294,11 @@ public class RoleService : IRoleService
     public RoleService(HttpClient http) => _http = http;
 
     public async Task<List<RoleDto>> GetAllAsync() =>
-        await _http.GetFromJsonAsync<List<RoleDto>>("api/roles") ?? new();
+        await _http.GetFromJsonAsync<List<RoleDto>>("api/roles", JsonOptions.CaseInsensitive) ?? new();
 
     public async Task<bool> CreateAsync(string name)
     {
-        var r = await _http.PostAsJsonAsync("api/roles", new { name });
+        var r = await _http.PostAsJsonAsync("api/roles", new CreateRoleRequest(name));
         return r.IsSuccessStatusCode;
     }
 
@@ -225,13 +310,13 @@ public class RoleService : IRoleService
 
     public async Task<bool> AssignRoleAsync(string userId, string roleName)
     {
-        var r = await _http.PostAsJsonAsync("api/roles/assign", new { userId, roleName });
+        var r = await _http.PostAsJsonAsync("api/roles/assign", new AssignRoleRequest(userId, roleName));
         return r.IsSuccessStatusCode;
     }
 
     public async Task<bool> RemoveRoleAsync(string userId, string roleName)
     {
-        var r = await _http.PostAsJsonAsync("api/roles/remove", new { userId, roleName });
+        var r = await _http.PostAsJsonAsync("api/roles/remove", new AssignRoleRequest(userId, roleName));
         return r.IsSuccessStatusCode;
     }
 }
@@ -240,8 +325,8 @@ public class RoleService : IRoleService
 
 public interface ILogService
 {
-    Task<PagedResult<DoorLogDto>> GetLogsAsync(Guid? doorId = null, string? userId = null,
-        DateTime? from = null, DateTime? to = null, int page = 1, int pageSize = 20);
+    Task<PagedResult<DoorAccessLogDto>> GetLogsAsync(Guid? doorId = null, string? userId = null,
+        DateTime? from = null, DateTime? to = null, int page = 1, int pageSize = 25);
 }
 
 public class LogService : ILogService
@@ -249,7 +334,7 @@ public class LogService : ILogService
     private readonly IDoorService _doorService;
     public LogService(IDoorService doorService) => _doorService = doorService;
 
-    public Task<PagedResult<DoorLogDto>> GetLogsAsync(Guid? doorId = null, string? userId = null,
-        DateTime? from = null, DateTime? to = null, int page = 1, int pageSize = 20) =>
+    public Task<PagedResult<DoorAccessLogDto>> GetLogsAsync(Guid? doorId = null, string? userId = null,
+        DateTime? from = null, DateTime? to = null, int page = 1, int pageSize = 25) =>
         _doorService.GetLogsAsync(doorId, userId, from, to, page, pageSize);
 }

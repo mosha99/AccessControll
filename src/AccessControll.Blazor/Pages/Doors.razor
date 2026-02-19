@@ -3,10 +3,11 @@
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Roles = "Admin,DoorManager")]
 @inject IDoorService DoorService
+@inject IUserService UserService
 @inject DoorHubService HubService
 @implements IAsyncDisposable
 
-<PageTitle>مدیریت درها — MediaR</PageTitle>
+<PageTitle>مدیریت درها — AccessControll</PageTitle>
 
 <div class="page" dir="rtl">
     <div class="page-header">
@@ -37,6 +38,7 @@
                 </div>
                 <div class="door-body">
                     <h3>@door.Name</h3>
+                    <p class="door-code">کد: @door.Code</p>
                     <p class="door-desc">@door.Description</p>
                     <p class="door-location">📍 @door.Location</p>
                     @if (!string.IsNullOrEmpty(door.HardwareId))
@@ -46,31 +48,35 @@
                 </div>
                 <div class="door-footer">
                     <div class="control-buttons">
-                        <button class="btn-open @(!door.IsEnabled || !door.IsLocked ? "btn-disabled" : "")"
-                                disabled="@(!door.IsEnabled || !door.IsLocked)"
+                        <button class="btn-open" disabled="@(!door.IsEnabled || !door.IsLocked)"
                                 @onclick="@(() => ControlDoor(door.Id, false))">
                             🔓 باز
                         </button>
-                        <button class="btn-lock @(!door.IsEnabled || door.IsLocked ? "btn-disabled" : "")"
-                                disabled="@(!door.IsEnabled || door.IsLocked)"
+                        <button class="btn-lock" disabled="@(!door.IsEnabled || door.IsLocked)"
                                 @onclick="@(() => ControlDoor(door.Id, true))">
                             🔒 قفل
                         </button>
                     </div>
-                    <AuthorizeView Roles="Admin">
-                        <Authorized>
-                            <div class="admin-actions">
+                    <div class="admin-actions">
+                        <AuthorizeView Roles="Admin,DoorManager">
+                            <Authorized>
+                                <button class="btn-icon" @onclick="@(() => OpenPermissionsModal(door))" title="مجوزها">🔑</button>
+                            </Authorized>
+                        </AuthorizeView>
+                        <AuthorizeView Roles="Admin">
+                            <Authorized>
                                 <button class="btn-icon" @onclick="@(() => OpenEditModal(door))" title="ویرایش">✏️</button>
                                 <button class="btn-icon btn-del" @onclick="@(() => DeleteDoor(door.Id))" title="حذف">🗑️</button>
-                            </div>
-                        </Authorized>
-                    </AuthorizeView>
+                            </Authorized>
+                        </AuthorizeView>
+                    </div>
                 </div>
             </div>
         }
     </div>
 </div>
 
+<!-- Create/Edit Modal -->
 @if (_showModal)
 {
     <div class="modal-overlay" @onclick="CloseModal">
@@ -83,6 +89,10 @@
                 <div class="form-row">
                     <label>نام در</label>
                     <input type="text" @bind="_form.Name" class="form-input" placeholder="مثلاً: در ورودی اصلی" />
+                </div>
+                <div class="form-row">
+                    <label>کد در</label>
+                    <input type="number" @bind="_form.Code" class="form-input" placeholder="مثلاً: 1001" dir="ltr" />
                 </div>
                 <div class="form-row">
                     <label>توضیحات</label>
@@ -118,6 +128,113 @@
     </div>
 }
 
+<!-- Permissions Modal -->
+@if (_showPermModal && _permDoor != null)
+{
+    <div class="modal-overlay" @onclick="ClosePermModal">
+        <div class="modal modal-wide" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h3>🔑 مجوزهای دسترسی — @_permDoor.Name</h3>
+                <button class="modal-close" @onclick="ClosePermModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <!-- Current Permissions -->
+                @if (_permissions.Count == 0)
+                {
+                    <div class="empty-perms">هیچ مجوزی تعریف نشده است</div>
+                }
+                else
+                {
+                    <table class="perm-table">
+                        <thead>
+                            <tr>
+                                <th>کاربر</th>
+                                <th>باز کردن</th>
+                                <th>قفل کردن</th>
+                                <th>از ساعت</th>
+                                <th>تا ساعت</th>
+                                <th>عملیات</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var p in _permissions)
+                            {
+                                <tr>
+                                    <td>
+                                        <div class="user-cell">
+                                            <strong>@p.UserFullName</strong>
+                                            <span class="email-small">@p.UserEmail</span>
+                                        </div>
+                                    </td>
+                                    <td><span class="perm-badge @(p.CanOpen ? "perm-yes" : "perm-no")">@(p.CanOpen ? "✓" : "✗")</span></td>
+                                    <td><span class="perm-badge @(p.CanLock ? "perm-yes" : "perm-no")">@(p.CanLock ? "✓" : "✗")</span></td>
+                                    <td>@(p.AllowedFromTime.HasValue ? p.AllowedFromTime.Value.ToString(@"hh\:mm") : "—")</td>
+                                    <td>@(p.AllowedToTime.HasValue ? p.AllowedToTime.Value.ToString(@"hh\:mm") : "—")</td>
+                                    <td>
+                                        <AuthorizeView Roles="Admin">
+                                            <Authorized>
+                                                <button class="btn-sm btn-del-perm" @onclick="@(async () => await RevokePermission(p.UserId))">لغو</button>
+                                            </Authorized>
+                                        </AuthorizeView>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                }
+
+                <!-- Grant Permission Form (Admin only) -->
+                <AuthorizeView Roles="Admin">
+                    <Authorized>
+                        <div class="grant-section">
+                            <h4>+ اعطای مجوز جدید</h4>
+                            <div class="grant-form">
+                                <div class="form-row">
+                                    <label>کاربر</label>
+                                    <select @bind="_grantForm.UserId" class="form-input">
+                                        <option value="">— انتخاب کاربر —</option>
+                                        @foreach (var u in _allUsers)
+                                        {
+                                            <option value="@u.Id">@u.FullName (@u.Email)</option>
+                                        }
+                                    </select>
+                                </div>
+                                <div class="perm-checks">
+                                    <label class="check-label">
+                                        <input type="checkbox" @bind="_grantForm.CanOpen" />
+                                        باز کردن
+                                    </label>
+                                    <label class="check-label">
+                                        <input type="checkbox" @bind="_grantForm.CanLock" />
+                                        قفل کردن
+                                    </label>
+                                </div>
+                                <div class="time-row">
+                                    <div class="form-row">
+                                        <label>از ساعت (اختیاری)</label>
+                                        <input type="time" @bind="_grantFrom" class="form-input" />
+                                    </div>
+                                    <div class="form-row">
+                                        <label>تا ساعت (اختیاری)</label>
+                                        <input type="time" @bind="_grantTo" class="form-input" />
+                                    </div>
+                                </div>
+                                @if (!string.IsNullOrEmpty(_permMsg))
+                                {
+                                    <div class="perm-msg @(_permSuccess ? "msg-ok" : "msg-err")">@_permMsg</div>
+                                }
+                                <button class="btn-primary" @onclick="GrantPermission" disabled="@_savingPerm">
+                                    @(_savingPerm ? "در حال ذخیره..." : "اعطای مجوز")
+                                </button>
+                            </div>
+                        </div>
+                    </Authorized>
+                </AuthorizeView>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
     private List<DoorDto> _doors = new();
     private bool _showModal, _saving;
@@ -125,6 +242,17 @@
     private bool _messageSuccess = false;
     private DoorDto? _editingDoor;
     private DoorFormModel _form = new();
+
+    // Permissions modal
+    private bool _showPermModal;
+    private DoorDto? _permDoor;
+    private List<UserPermissionDto> _permissions = new();
+    private List<UserDto> _allUsers = new();
+    private GrantForm _grantForm = new();
+    private TimeOnly? _grantFrom, _grantTo;
+    private bool _savingPerm;
+    private string _permMsg = "";
+    private bool _permSuccess;
 
     protected override async Task OnInitializedAsync()
     {
@@ -146,9 +274,9 @@
         }
     }
 
-    private async Task ControlDoor(Guid doorId, bool lock_)
+    private async Task ControlDoor(Guid doorId, bool lockDoor)
     {
-        var (success, msg) = await DoorService.ControlDoorAsync(doorId, lock_);
+        var (success, msg) = await DoorService.ControlDoorAsync(doorId, lockDoor);
         _message = msg;
         _messageSuccess = success;
         StateHasChanged();
@@ -162,7 +290,7 @@
     private void OpenEditModal(DoorDto door)
     {
         _editingDoor = door;
-        _form = new DoorFormModel { Name = door.Name, Description = door.Description, Location = door.Location, HardwareId = door.HardwareId, IsEnabled = door.IsEnabled };
+        _form = new DoorFormModel { Name = door.Name, Code = door.Code, Description = door.Description, Location = door.Location, HardwareId = door.HardwareId, IsEnabled = door.IsEnabled };
         _showModal = true;
     }
 
@@ -170,9 +298,9 @@
     {
         _saving = true;
         if (_editingDoor == null)
-            await DoorService.CreateAsync(_form.Name, _form.Description, _form.Location, _form.HardwareId);
+            await DoorService.CreateAsync(_form.Name, _form.Code, _form.Description, _form.Location, _form.HardwareId);
         else
-            await DoorService.UpdateAsync(_editingDoor.Id, _form.Name, _form.Description, _form.Location, _form.IsEnabled, _form.HardwareId);
+            await DoorService.UpdateAsync(_editingDoor.Id, _form.Name, _form.Code, _form.Description, _form.Location, _form.IsEnabled, _form.HardwareId);
         CloseModal();
         await LoadDoors();
         _saving = false;
@@ -180,6 +308,58 @@
 
     private async Task DeleteDoor(Guid id) { await DoorService.DeleteAsync(id); await LoadDoors(); }
     private void CloseModal() { _showModal = false; }
+
+    // --- Permissions ---
+    private async Task OpenPermissionsModal(DoorDto door)
+    {
+        _permDoor = door;
+        _permissions = await DoorService.GetPermissionsAsync(door.Id);
+        if (_allUsers.Count == 0)
+        {
+            var result = await UserService.GetAllAsync(1, 100);
+            _allUsers = result.Items.ToList();
+        }
+        _grantForm = new GrantForm();
+        _grantFrom = null;
+        _grantTo = null;
+        _permMsg = "";
+        _showPermModal = true;
+    }
+
+    private void ClosePermModal() { _showPermModal = false; _permDoor = null; }
+
+    private async Task GrantPermission()
+    {
+        if (string.IsNullOrEmpty(_grantForm.UserId)) { _permMsg = "کاربر را انتخاب کنید"; _permSuccess = false; return; }
+        _savingPerm = true;
+        _permMsg = "";
+
+        var from = _grantFrom.HasValue ? (TimeSpan?)_grantFrom.Value.ToTimeSpan() : null;
+        var to = _grantTo.HasValue ? (TimeSpan?)_grantTo.Value.ToTimeSpan() : null;
+
+        var ok = await DoorService.GrantPermissionAsync(_permDoor!.Id, _grantForm.UserId, _grantForm.CanOpen, _grantForm.CanLock, from, to);
+        _permSuccess = ok;
+        _permMsg = ok ? "مجوز با موفقیت اعطا شد" : "خطا در اعطای مجوز";
+        if (ok)
+        {
+            _permissions = await DoorService.GetPermissionsAsync(_permDoor!.Id);
+            _grantForm = new GrantForm();
+            _grantFrom = null;
+            _grantTo = null;
+        }
+        _savingPerm = false;
+    }
+
+    private async Task RevokePermission(string userId)
+    {
+        var ok = await DoorService.RevokePermissionAsync(_permDoor!.Id, userId);
+        if (ok)
+        {
+            _permMsg = "مجوز لغو شد";
+            _permSuccess = true;
+            _permissions = await DoorService.GetPermissionsAsync(_permDoor!.Id);
+        }
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -190,10 +370,18 @@
     private class DoorFormModel
     {
         public string Name { get; set; } = "";
+        public int Code { get; set; }
         public string Description { get; set; } = "";
         public string Location { get; set; } = "";
         public string? HardwareId { get; set; }
         public bool IsEnabled { get; set; } = true;
+    }
+
+    private class GrantForm
+    {
+        public string UserId { get; set; } = "";
+        public bool CanOpen { get; set; } = true;
+        public bool CanLock { get; set; }
     }
 }
 
@@ -206,7 +394,7 @@
     .alert-success { background: #d4edda; color: #1a7a3c; border: 1px solid #a8ddb8; }
     .alert-error { background: #fdecea; color: #c00; border: 1px solid #f8bbbb; }
 
-    .doors-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }
+    .doors-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 20px; }
 
     .door-card {
         background: white; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.08);
@@ -217,10 +405,7 @@
     .door-card.locked { border-color: #e74c3c; }
     .door-card.disabled { border-color: #ccc; opacity: 0.65; }
 
-    .door-header {
-        display: flex; justify-content: space-between; align-items: center;
-        padding: 16px 18px; background: #f8f9fa; border-bottom: 1px solid #f0f0f0;
-    }
+    .door-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 18px; background: #f8f9fa; border-bottom: 1px solid #f0f0f0; }
     .door-icon { font-size: 28px; }
     .door-status-indicator { font-size: 12px; font-weight: 600; padding: 4px 12px; border-radius: 20px; background: #fdecea; color: #c00; }
     .unlocked .door-status-indicator { background: #d4edda; color: #1a7a3c; }
@@ -228,23 +413,21 @@
 
     .door-body { padding: 18px; }
     .door-body h3 { font-size: 17px; font-weight: 600; color: #1a1a2e; margin-bottom: 6px; }
+    .door-code { color: #0f3460; font-size: 12px; font-weight: 600; margin-bottom: 6px; }
     .door-desc { color: #777; font-size: 13px; margin-bottom: 8px; }
     .door-location, .door-hw { font-size: 12px; color: #888; margin-bottom: 4px; }
 
     .door-footer { padding: 14px 18px; border-top: 1px solid #f5f5f5; display: flex; justify-content: space-between; align-items: center; }
     .control-buttons { display: flex; gap: 8px; }
-    .btn-open, .btn-lock {
-        padding: 8px 16px; border: none; border-radius: 8px; font-size: 13px;
-        font-weight: 500; cursor: pointer; transition: all 0.2s;
-    }
+    .btn-open, .btn-lock { padding: 8px 16px; border: none; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.2s; }
     .btn-open { background: #27ae60; color: white; }
     .btn-open:hover:not(:disabled) { background: #229954; }
     .btn-lock { background: #e74c3c; color: white; }
     .btn-lock:hover:not(:disabled) { background: #c0392b; }
-    .btn-disabled, :disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-open:disabled, .btn-lock:disabled { opacity: 0.4; cursor: not-allowed; }
 
     .admin-actions { display: flex; gap: 6px; }
-    .btn-icon { background: #f0f0f0; border: none; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 14px; }
+    .btn-icon { background: #f0f0f0; border: none; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 14px; transition: all 0.15s; }
     .btn-icon:hover { background: #e0e0e0; }
     .btn-del { background: #fdecea; }
     .btn-del:hover { background: #f8bbbb; }
@@ -253,16 +436,17 @@
     .btn-primary:disabled { opacity: 0.7; cursor: not-allowed; }
     .btn-secondary { background: #f0f0f0; color: #333; padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
 
-    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-    .modal { background: white; border-radius: 16px; width: 460px; max-width: 95vw; overflow: hidden; }
-    .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 20px 24px; border-bottom: 1px solid #eee; }
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; backdrop-filter: blur(2px); }
+    .modal { background: white; border-radius: 16px; width: 460px; max-width: 95vw; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,0.3); max-height: 90vh; overflow-y: auto; }
+    .modal-wide { width: 680px; }
+    .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 20px 24px; border-bottom: 1px solid #eee; position: sticky; top: 0; background: white; }
     .modal-header h3 { font-size: 18px; font-weight: 600; }
     .modal-close { background: none; border: none; font-size: 18px; cursor: pointer; color: #888; }
     .modal-body { padding: 24px; display: flex; flex-direction: column; gap: 16px; }
     .modal-footer { display: flex; gap: 10px; padding: 16px 24px; border-top: 1px solid #eee; }
     .form-row { display: flex; flex-direction: column; gap: 6px; }
     .form-row label { font-size: 13px; font-weight: 500; }
-    .form-input { padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px; outline: none; width: 100%; }
+    .form-input { padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px; outline: none; width: 100%; box-sizing: border-box; }
     .form-input:focus { border-color: #0f3460; }
 
     .toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; }
@@ -271,4 +455,32 @@
     .toggle input:checked + .toggle-slider { background: #27ae60; }
     .toggle-slider::after { content: ''; position: absolute; width: 18px; height: 18px; background: white; border-radius: 50%; top: 3px; right: 3px; transition: transform 0.2s; }
     .toggle input:checked + .toggle-slider::after { transform: translateX(-20px); }
+
+    /* Permissions table */
+    .perm-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .perm-table th { background: #f0f4ff; padding: 10px 12px; text-align: right; font-weight: 600; color: #333; border-bottom: 2px solid #e0e8ff; }
+    .perm-table td { padding: 10px 12px; border-bottom: 1px solid #f5f5f5; vertical-align: middle; }
+    .perm-table tr:hover td { background: #fafbff; }
+    .user-cell { display: flex; flex-direction: column; gap: 2px; }
+    .email-small { font-size: 11px; color: #888; direction: ltr; }
+    .perm-badge { font-size: 12px; padding: 3px 10px; border-radius: 20px; font-weight: 600; }
+    .perm-yes { background: #d4edda; color: #1a7a3c; }
+    .perm-no { background: #fdecea; color: #c00; }
+
+    .empty-perms { padding: 24px; text-align: center; color: #888; font-size: 14px; background: #f9fafb; border-radius: 8px; }
+
+    .grant-section { border-top: 2px solid #e8f0fe; padding-top: 20px; margin-top: 8px; }
+    .grant-section h4 { font-size: 15px; font-weight: 600; color: #0f3460; margin-bottom: 16px; }
+    .grant-form { display: flex; flex-direction: column; gap: 14px; }
+    .perm-checks { display: flex; gap: 20px; }
+    .check-label { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+    .time-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+    .btn-sm { padding: 5px 12px; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; }
+    .btn-del-perm { background: #fdecea; color: #c00; }
+    .btn-del-perm:hover { background: #f8bbbb; }
+
+    .perm-msg { padding: 10px 14px; border-radius: 8px; font-size: 13px; }
+    .msg-ok { background: #d4edda; color: #1a7a3c; }
+    .msg-err { background: #fdecea; color: #c00; }
 </style>

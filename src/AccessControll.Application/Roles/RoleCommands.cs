@@ -1,9 +1,10 @@
 using MediatR;
 using Microsoft.AspNetCore.Identity;
+using AccessControll.Contracts.Roles;
 
 namespace AccessControll.Application.Roles;
 
-public record RoleDto(string Id, string Name, int UsersCount);
+// ── Queries & Commands ────────────────────────────────────────────────────────
 
 public record GetAllRolesQuery : IRequest<IEnumerable<RoleDto>>;
 public record CreateRoleCommand(string Name) : IRequest<(bool Succeeded, string? Error)>;
@@ -11,12 +12,16 @@ public record DeleteRoleCommand(string Id) : IRequest<(bool Succeeded, string? E
 public record AssignRoleToUserCommand(string UserId, string RoleName) : IRequest<bool>;
 public record RemoveRoleFromUserCommand(string UserId, string RoleName) : IRequest<bool>;
 
+// ── Handlers ──────────────────────────────────────────────────────────────────
+
 public class GetAllRolesQueryHandler : IRequestHandler<GetAllRolesQuery, IEnumerable<RoleDto>>
 {
     private readonly RoleManager<IdentityRole> _roleManager;
     private readonly Microsoft.AspNetCore.Identity.UserManager<Domain.Entities.ApplicationUser> _userManager;
 
-    public GetAllRolesQueryHandler(RoleManager<IdentityRole> roleManager, Microsoft.AspNetCore.Identity.UserManager<Domain.Entities.ApplicationUser> userManager)
+    public GetAllRolesQueryHandler(
+        RoleManager<IdentityRole> roleManager,
+        Microsoft.AspNetCore.Identity.UserManager<Domain.Entities.ApplicationUser> userManager)
     {
         _roleManager = roleManager;
         _userManager = userManager;
@@ -46,7 +51,9 @@ public class CreateRoleCommandHandler : IRequestHandler<CreateRoleCommand, (bool
             return (false, "این نقش از قبل وجود دارد");
 
         var result = await _roleManager.CreateAsync(new IdentityRole(request.Name));
-        return result.Succeeded ? (true, null) : (false, string.Join(", ", result.Errors.Select(e => e.Description)));
+        return result.Succeeded
+            ? (true, null)
+            : (false, string.Join(", ", result.Errors.Select(e => e.Description)));
     }
 }
 
@@ -61,14 +68,17 @@ public class DeleteRoleCommandHandler : IRequestHandler<DeleteRoleCommand, (bool
         if (role == null) return (false, "نقش یافت نشد");
 
         var result = await _roleManager.DeleteAsync(role);
-        return result.Succeeded ? (true, null) : (false, string.Join(", ", result.Errors.Select(e => e.Description)));
+        return result.Succeeded
+            ? (true, null)
+            : (false, string.Join(", ", result.Errors.Select(e => e.Description)));
     }
 }
 
 public class AssignRoleToUserCommandHandler : IRequestHandler<AssignRoleToUserCommand, bool>
 {
     private readonly Microsoft.AspNetCore.Identity.UserManager<Domain.Entities.ApplicationUser> _userManager;
-    public AssignRoleToUserCommandHandler(Microsoft.AspNetCore.Identity.UserManager<Domain.Entities.ApplicationUser> userManager) => _userManager = userManager;
+    public AssignRoleToUserCommandHandler(Microsoft.AspNetCore.Identity.UserManager<Domain.Entities.ApplicationUser> userManager)
+        => _userManager = userManager;
 
     public async Task<bool> Handle(AssignRoleToUserCommand request, CancellationToken ct)
     {
@@ -82,7 +92,8 @@ public class AssignRoleToUserCommandHandler : IRequestHandler<AssignRoleToUserCo
 public class RemoveRoleFromUserCommandHandler : IRequestHandler<RemoveRoleFromUserCommand, bool>
 {
     private readonly Microsoft.AspNetCore.Identity.UserManager<Domain.Entities.ApplicationUser> _userManager;
-    public RemoveRoleFromUserCommandHandler(Microsoft.AspNetCore.Identity.UserManager<Domain.Entities.ApplicationUser> userManager) => _userManager = userManager;
+    public RemoveRoleFromUserCommandHandler(Microsoft.AspNetCore.Identity.UserManager<Domain.Entities.ApplicationUser> userManager)
+        => _userManager = userManager;
 
     public async Task<bool> Handle(RemoveRoleFromUserCommand request, CancellationToken ct)
     {

@@ -9,13 +9,12 @@ namespace AccessControll.Infrastructure.Services;
 /// </summary>
 public static class DatabaseSeeder
 {
-    public static async Task SeedAsync(
+    public static async Task SeedAsync(bool develoop ,
         ApplicationDbContext context,
         UserManager<ApplicationUser> userManager,
         RoleManager<IdentityRole> roleManager)
     {
-        await context.Database.EnsureCreatedAsync();
-
+        Console.WriteLine("---------Start Seed ----------------------");
         // Seed roles
         var roles = new[] { "Admin", "DoorManager", "User" };
         foreach (var role in roles)
@@ -33,7 +32,7 @@ public static class DatabaseSeeder
                 UserName = adminEmail,
                 Email = adminEmail,
                 FullName = "مدیر سیستم",
-                IsActive = true,
+                IsActive = develoop,
                 EmailConfirmed = true
             };
             var result = await userManager.CreateAsync(admin, "Admin@1234!");
@@ -42,7 +41,7 @@ public static class DatabaseSeeder
         }
 
         // Seed sample doors
-        if (!context.Doors.Any())
+        if (develoop && !context.Doors.Any())
         {
             var doors = new[]
             {

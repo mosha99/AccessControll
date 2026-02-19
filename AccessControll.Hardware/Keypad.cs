@@ -1,9 +1,11 @@
-﻿using Microsoft.Extensions.Logging;
+﻿using Iot.Device.Display;
+using Iot.Device.FtCommon;
+using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.Extensions.Logging;
 using System.Device.Gpio;
 using System.Device.I2c;
 
 namespace AccessControll.Hardware;
-
 public class Keypad
 {
     private readonly GpioController _controller;

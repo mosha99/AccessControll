@@ -16,4 +16,8 @@
     <PackageReference Include="System.Device.Gpio" Version="4.1.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\src\AccessControll.Application\AccessControll.Application.csproj" />
+  </ItemGroup>
+
 </Project>

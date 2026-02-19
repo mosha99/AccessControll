@@ -5,6 +5,9 @@ using System.Security.Claims;
 using AccessControll.Application.Doors;
 using AccessControll.API.Hubs;
 using Microsoft.AspNetCore.SignalR;
+using AccessControll.Domain.Interfaces;
+using AccessControll.Domain.Entities;
+using AccessControll.Contracts.Doors;
 
 namespace AccessControll.API.Controllers;
 
@@ -15,12 +18,16 @@ public class DoorsController : ControllerBase
 {
     private readonly IMediator _mediator;
     private readonly IHubContext<DoorHub> _hub;
+    private readonly IUserDoorPermissionRepository _permRepo;
 
-    public DoorsController(IMediator mediator, IHubContext<DoorHub> hub)
+    public DoorsController(IMediator mediator, IHubContext<DoorHub> hub, IUserDoorPermissionRepository permRepo)
     {
         _mediator = mediator;
         _hub = hub;
+        _permRepo = permRepo;
     }
+
+    private string UserId => User.FindFirstValue(ClaimTypes.NameIdentifier)!;
 
     /// <summary>لیست تمام درها</summary>
     [HttpGet]
@@ -69,19 +76,16 @@ public class DoorsController : ControllerBase
         return NoContent();
     }
 
-    /// <summary>قفل یا باز کردن در — کنترل اصلی</summary>
+    /// <summary>قفل یا باز کردن در</summary>
     [HttpPost("{id:guid}/control")]
     public async Task<IActionResult> Control(Guid id, [FromBody] ControlDoorRequest request)
     {
-        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
         var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
-
         var (succeeded, message) = await _mediator.Send(
-            new ControlDoorCommand(id, userId, request.Lock, ipAddress));
+            new ControlDoorCommand(id, null, UserId, request.Lock, ipAddress));
 
         if (succeeded)
         {
-            // Real-time notification to all connected clients
             await _hub.Clients.All.SendAsync("DoorStatusChanged", new
             {
                 DoorId = id,
@@ -91,10 +95,10 @@ public class DoorsController : ControllerBase
             });
         }
 
-        return succeeded ? Ok(new { message }) : Forbid();
+        return succeeded ? Ok(new { message }) : BadRequest(new { message });
     }
 
-    /// <summary>لاگ دسترسی‌های در</summary>
+    /// <summary>لاگ دسترسی‌های درها</summary>
     [HttpGet("logs")]
     [Authorize(Roles = "Admin,DoorManager")]
     public async Task<IActionResult> GetLogs(
@@ -103,18 +107,27 @@ public class DoorsController : ControllerBase
         [FromQuery] DateTime? from,
         [FromQuery] DateTime? to,
         [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 20)
+        [FromQuery] int pageSize = 25)
     {
         var (items, total) = await _mediator.Send(new GetDoorLogsQuery(doorId, userId, from, to, page, pageSize));
         return Ok(new { items, total, page, pageSize });
     }
 
-    /// <summary>مدیریت دسترسی کاربران به در</summary>
+    /// <summary>لیست مجوزهای یک در</summary>
+    [HttpGet("{doorId:guid}/permissions")]
+    [Authorize(Roles = "Admin,DoorManager")]
+    public async Task<IActionResult> GetPermissions(Guid doorId)
+    {
+        var perms = await _mediator.Send(new GetDoorPermissionsQuery(doorId));
+        return Ok(perms);
+    }
+
+    /// <summary>اعطای مجوز دسترسی به کاربر</summary>
     [HttpPost("{doorId:guid}/permissions")]
     [Authorize(Roles = "Admin")]
     public async Task<IActionResult> GrantPermission(Guid doorId, [FromBody] GrantPermissionRequest request)
     {
-        var permission = new Domain.Entities.UserDoorPermission
+        var permission = new UserDoorPermission
         {
             UserId = request.UserId,
             DoorId = doorId,
@@ -122,22 +135,19 @@ public class DoorsController : ControllerBase
             CanLock = request.CanLock,
             AllowedFromTime = request.AllowedFromTime,
             AllowedToTime = request.AllowedToTime,
-            GrantedByUserId = User.FindFirstValue(ClaimTypes.NameIdentifier)!
+            GrantedByUserId = UserId
         };
 
-        var repo = HttpContext.RequestServices.GetRequiredService<Domain.Interfaces.IUserDoorPermissionRepository>();
-        await repo.GrantPermissionAsync(permission);
-        return Ok(new { message = "دسترسی اعطا شد" });
+        await _permRepo.GrantPermissionAsync(permission);
+        return Ok(new { message = "دسترسی با موفقیت اعطا شد" });
     }
 
-    [HttpDelete("{doorId:guid}/permissions/{userId}")]
+    /// <summary>لغو مجوز دسترسی کاربر</summary>
+    [HttpDelete("{doorId:guid}/permissions/{targetUserId}")]
     [Authorize(Roles = "Admin")]
-    public async Task<IActionResult> RevokePermission(Guid doorId, string userId)
+    public async Task<IActionResult> RevokePermission(Guid doorId, string targetUserId)
     {
-        var repo = HttpContext.RequestServices.GetRequiredService<Domain.Interfaces.IUserDoorPermissionRepository>();
-        await repo.RevokePermissionAsync(userId, doorId);
+        await _permRepo.RevokePermissionAsync(targetUserId, doorId);
         return Ok(new { message = "دسترسی لغو شد" });
     }
 }
-
-public record GrantPermissionRequest(string UserId, bool CanOpen, bool CanLock, TimeSpan? AllowedFromTime, TimeSpan? AllowedToTime);

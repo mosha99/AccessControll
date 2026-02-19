@@ -86,7 +86,6 @@
 
 @code {
     private List<RoleDto> _roles = new();
-    private bool _loading = true;
     private bool _showModal, _saving;
     private string _newRoleName = "";
     private string _error = "";
@@ -97,9 +96,7 @@
 
     private async Task LoadRoles()
     {
-        _loading = true;
         _roles = await RoleService.GetAllAsync();
-        _loading = false;
     }
 
     private bool IsSystemRole(string name) => SystemRoles.Contains(name);

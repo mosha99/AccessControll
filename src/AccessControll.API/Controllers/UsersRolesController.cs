@@ -3,6 +3,9 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using AccessControll.Application.Users;
 using AccessControll.Application.Roles;
+using AccessControll.Application.Doors;
+using AccessControll.Contracts.Users;
+using AccessControll.Contracts.Roles;
 
 namespace AccessControll.API.Controllers;
 
@@ -28,18 +31,25 @@ public class UsersController : ControllerBase
         return user == null ? NotFound() : Ok(user);
     }
 
+    [HttpGet("{id}/permissions")]
+    [Authorize(Roles = "Admin,DoorManager")]
+    public async Task<IActionResult> GetPermissions(string id)
+    {
+        var perms = await _mediator.Send(new GetUserPermissionsForDoorsQuery(id));
+        return Ok(perms);
+    }
+
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] CreateUserRequest request)
     {
         var (succeeded, errors) = await _mediator.Send(
             new CreateUserCommand(request.Email, request.FullName, request.Password, request.Roles));
-        return succeeded ? Ok(new { message = "کاربر ایجاد شد" }) : BadRequest(new { errors });
+        return succeeded ? Ok(new { message = "کاربر با موفقیت ایجاد شد" }) : BadRequest(new { errors });
     }
 
     [HttpPut("{id}")]
     public async Task<IActionResult> Update(string id, [FromBody] UpdateUserRequest request)
     {
-        if (id != request.Id) return BadRequest();
         var success = await _mediator.Send(new UpdateUserCommand(id, request.FullName, request.IsActive, request.Roles));
         return success ? Ok() : NotFound();
     }
@@ -78,7 +88,7 @@ public class RolesController : ControllerBase
     public async Task<IActionResult> Create([FromBody] CreateRoleRequest request)
     {
         var (succeeded, error) = await _mediator.Send(new CreateRoleCommand(request.Name));
-        return succeeded ? Ok(new { message = "نقش ایجاد شد" }) : BadRequest(new { error });
+        return succeeded ? Ok(new { message = "نقش با موفقیت ایجاد شد" }) : BadRequest(new { error });
     }
 
     [HttpDelete("{id}")]
@@ -102,6 +112,3 @@ public class RolesController : ControllerBase
         return success ? Ok() : BadRequest();
     }
 }
-
-public record CreateRoleRequest(string Name);
-public record AssignRoleRequest(string UserId, string RoleName);

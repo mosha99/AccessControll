@@ -2,33 +2,34 @@ using MediatR;
 using AccessControll.Domain.Entities;
 using AccessControll.Domain.Enums;
 using AccessControll.Domain.Interfaces;
+using AccessControll.Contracts.Doors;
 
 namespace AccessControll.Application.Doors;
 
-// ── DTOs ──────────────────────────────────────────────────────────────────────
-
-public record DoorDto(Guid Id, string Name, string Description, string Location, bool IsLocked, bool IsEnabled, string? HardwareId, DateTime CreatedAt);
-public record DoorAccessLogDto(Guid Id, string DoorName, string UserFullName, string UserEmail, DateTime AccessedAt, string Action, string Result, string? IpAddress, string? Notes);
-public record ControlDoorRequest(Guid DoorId, string UserId, bool Lock);
-
-// ── Commands & Queries ────────────────────────────────────────────────────────
+// ── Queries & Commands ────────────────────────────────────────────────────────
 
 public record GetAllDoorsQuery : IRequest<IEnumerable<DoorDto>>;
 public record GetDoorByIdQuery(Guid Id) : IRequest<DoorDto?>;
 
-public record CreateDoorCommand(string Name, string Description, string Location, string? HardwareId)
+public record CreateDoorCommand(string Name, int Code, string Description, string Location, string? HardwareId)
     : IRequest<DoorDto>;
 
-public record UpdateDoorCommand(Guid Id, string Name, string Description, string Location, bool IsEnabled, string? HardwareId)
+public record UpdateDoorCommand(Guid Id, string Name, int Code, string Description, string Location, bool IsEnabled, string? HardwareId)
     : IRequest<DoorDto>;
 
 public record DeleteDoorCommand(Guid Id) : IRequest;
 
-public record ControlDoorCommand(Guid DoorId, string UserId, bool Lock, string? IpAddress)
+public record ControlDoorCommand(Guid? DoorId, int? DoorCode, string UserId, bool Lock, string? IpAddress)
     : IRequest<(bool Succeeded, string Message)>;
 
 public record GetDoorLogsQuery(Guid? DoorId, string? UserId, DateTime? From, DateTime? To, int Page, int PageSize)
     : IRequest<(IEnumerable<DoorAccessLogDto> Items, int Total)>;
+
+public record GetDoorPermissionsQuery(Guid DoorId)
+    : IRequest<IEnumerable<UserPermissionDto>>;
+
+public record GetUserPermissionsForDoorsQuery(string UserId)
+    : IRequest<IEnumerable<UserPermissionDto>>;
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
@@ -40,7 +41,19 @@ public class GetAllDoorsQueryHandler : IRequestHandler<GetAllDoorsQuery, IEnumer
     public async Task<IEnumerable<DoorDto>> Handle(GetAllDoorsQuery request, CancellationToken ct)
     {
         var doors = await _repo.GetAllAsync();
-        return doors.Select(d => new DoorDto(d.Id, d.Name, d.Description, d.Location, d.IsLocked, d.IsEnabled, d.HardwareId, d.CreatedAt));
+        return doors.Select(d => d.ToDto());
+    }
+}
+
+public class GetDoorByIdQueryHandler : IRequestHandler<GetDoorByIdQuery, DoorDto?>
+{
+    private readonly IDoorRepository _repo;
+    public GetDoorByIdQueryHandler(IDoorRepository repo) => _repo = repo;
+
+    public async Task<DoorDto?> Handle(GetDoorByIdQuery request, CancellationToken ct)
+    {
+        var door = await _repo.GetByIdAsync(request.Id);
+        return door?.ToDto();
     }
 }
 
@@ -53,6 +66,7 @@ public class CreateDoorCommandHandler : IRequestHandler<CreateDoorCommand, DoorD
     {
         var door = new Door
         {
+            Code = request.Code,
             Name = request.Name,
             Description = request.Description,
             Location = request.Location,
@@ -61,7 +75,7 @@ public class CreateDoorCommandHandler : IRequestHandler<CreateDoorCommand, DoorD
             IsEnabled = true
         };
         var created = await _repo.CreateAsync(door);
-        return new DoorDto(created.Id, created.Name, created.Description, created.Location, created.IsLocked, created.IsEnabled, created.HardwareId, created.CreatedAt);
+        return created.ToDto();
     }
 }
 
@@ -75,6 +89,7 @@ public class UpdateDoorCommandHandler : IRequestHandler<UpdateDoorCommand, DoorD
         var door = await _repo.GetByIdAsync(request.Id)
             ?? throw new KeyNotFoundException("در یافت نشد");
 
+        door.Code = request.Code;
         door.Name = request.Name;
         door.Description = request.Description;
         door.Location = request.Location;
@@ -83,7 +98,7 @@ public class UpdateDoorCommandHandler : IRequestHandler<UpdateDoorCommand, DoorD
         door.LastModifiedAt = DateTime.UtcNow;
 
         var updated = await _repo.UpdateAsync(door);
-        return new DoorDto(updated.Id, updated.Name, updated.Description, updated.Location, updated.IsLocked, updated.IsEnabled, updated.HardwareId, updated.CreatedAt);
+        return updated.ToDto();
     }
 }
 
@@ -99,32 +114,43 @@ public class ControlDoorCommandHandler : IRequestHandler<ControlDoorCommand, (bo
     private readonly IDoorRepository _doorRepo;
     private readonly IDoorAccessLogRepository _logRepo;
     private readonly IUserDoorPermissionRepository _permRepo;
+    private readonly IPhysicalPortService _portService;
 
-    public ControlDoorCommandHandler(IDoorRepository doorRepo, IDoorAccessLogRepository logRepo, IUserDoorPermissionRepository permRepo)
+    public ControlDoorCommandHandler(IDoorRepository doorRepo, IDoorAccessLogRepository logRepo, IUserDoorPermissionRepository permRepo, IPhysicalPortService portService)
     {
         _doorRepo = doorRepo;
         _logRepo = logRepo;
         _permRepo = permRepo;
+        _portService = portService;
     }
 
     public async Task<(bool Succeeded, string Message)> Handle(ControlDoorCommand request, CancellationToken ct)
     {
-        var door = await _doorRepo.GetByIdAsync(request.DoorId);
-        if (door == null)
-            return (false, "در یافت نشد");
+        var doorId = request.DoorId ?? default;
+
+        if (request.DoorId == null)
+        {
+            if (request.DoorCode == null) return (false, "در یافت نشد");
+            var byCode = await _doorRepo.GetByCodeAsync(request.DoorCode.Value);
+            if (byCode == null) return (false, "در یافت نشد");
+            doorId = byCode.Id;
+        }
+
+        var door = await _doorRepo.GetByIdAsync(doorId);
+        if (door == null) return (false, "در یافت نشد");
 
         if (!door.IsEnabled)
         {
-            await _logRepo.LogAccessAsync(request.DoorId, request.UserId,
+            await _logRepo.LogAccessAsync(doorId, request.UserId,
                 request.Lock ? DoorAction.Lock : DoorAction.Unlock,
                 AccessResult.DoorDisabled, request.IpAddress);
             return (false, "در غیرفعال است");
         }
 
-        var perm = await _permRepo.GetPermissionAsync(request.UserId, request.DoorId);
+        var perm = await _permRepo.GetPermissionAsync(request.UserId, doorId);
         if (perm == null)
         {
-            await _logRepo.LogAccessAsync(request.DoorId, request.UserId,
+            await _logRepo.LogAccessAsync(doorId, request.UserId,
                 request.Lock ? DoorAction.Lock : DoorAction.Unlock,
                 AccessResult.NoPermission, request.IpAddress);
             return (false, "دسترسی ندارید");
@@ -132,18 +158,24 @@ public class ControlDoorCommandHandler : IRequestHandler<ControlDoorCommand, (bo
 
         if (!request.Lock && !perm.CanOpen)
         {
-            await _logRepo.LogAccessAsync(request.DoorId, request.UserId,
+            await _logRepo.LogAccessAsync(doorId, request.UserId,
                 DoorAction.Unlock, AccessResult.NoPermission, request.IpAddress);
             return (false, "مجاز به باز کردن در نیستید");
         }
 
-        // Check allowed time window
+        if (request.Lock && !perm.CanLock)
+        {
+            await _logRepo.LogAccessAsync(doorId, request.UserId,
+                DoorAction.Lock, AccessResult.NoPermission, request.IpAddress);
+            return (false, "مجاز به قفل کردن در نیستید");
+        }
+
         if (perm.AllowedFromTime.HasValue && perm.AllowedToTime.HasValue)
         {
             var now = DateTime.UtcNow.TimeOfDay;
             if (now < perm.AllowedFromTime || now > perm.AllowedToTime)
             {
-                await _logRepo.LogAccessAsync(request.DoorId, request.UserId,
+                await _logRepo.LogAccessAsync(doorId, request.UserId,
                     request.Lock ? DoorAction.Lock : DoorAction.Unlock,
                     AccessResult.OutsideAllowedHours, request.IpAddress);
                 return (false, "خارج از ساعت مجاز دسترسی");
@@ -155,7 +187,12 @@ public class ControlDoorCommandHandler : IRequestHandler<ControlDoorCommand, (bo
         await _doorRepo.UpdateAsync(door);
 
         var action = request.Lock ? DoorAction.Lock : DoorAction.Unlock;
-        await _logRepo.LogAccessAsync(request.DoorId, request.UserId, action, AccessResult.Success, request.IpAddress);
+        await _logRepo.LogAccessAsync(doorId, request.UserId, action, AccessResult.Success, request.IpAddress);
+
+        if (door.HardwareId is not null)
+        {
+            _portService.SetPortState(door.HardwareId, !request.Lock);
+        }
 
         return (true, request.Lock ? "در قفل شد" : "در باز شد");
     }
@@ -176,4 +213,43 @@ public class GetDoorLogsQueryHandler : IRequestHandler<GetDoorLogsQuery, (IEnume
             l.AccessedAt, l.Action.ToString(), l.Result.ToString(), l.IpAddress, l.Notes));
         return (dtos, total);
     }
+}
+
+public class GetDoorPermissionsQueryHandler : IRequestHandler<GetDoorPermissionsQuery, IEnumerable<UserPermissionDto>>
+{
+    private readonly IUserDoorPermissionRepository _permRepo;
+    public GetDoorPermissionsQueryHandler(IUserDoorPermissionRepository permRepo) => _permRepo = permRepo;
+
+    public async Task<IEnumerable<UserPermissionDto>> Handle(GetDoorPermissionsQuery request, CancellationToken ct)
+    {
+        var perms = await _permRepo.GetDoorPermissionsAsync(request.DoorId);
+        return perms.Select(p => p.ToDto());
+    }
+}
+
+public class GetUserPermissionsForDoorsQueryHandler : IRequestHandler<GetUserPermissionsForDoorsQuery, IEnumerable<UserPermissionDto>>
+{
+    private readonly IUserDoorPermissionRepository _permRepo;
+    public GetUserPermissionsForDoorsQueryHandler(IUserDoorPermissionRepository permRepo) => _permRepo = permRepo;
+
+    public async Task<IEnumerable<UserPermissionDto>> Handle(GetUserPermissionsForDoorsQuery request, CancellationToken ct)
+    {
+        var perms = await _permRepo.GetUserPermissionsAsync(request.UserId);
+        return perms.Select(p => p.ToDto());
+    }
+}
+
+// ── Mapping helpers ───────────────────────────────────────────────────────────
+
+internal static class DoorMappingExtensions
+{
+    public static DoorDto ToDto(this Door d) =>
+    new(d.Id, d.Name, d.Code, d.Description, d.Location, d.IsLocked, d.IsEnabled, d.HardwareId, d.CreatedAt);
+
+    public static UserPermissionDto ToDto(this UserDoorPermission p) =>
+    new(p.Id, p.UserId, p.User?.FullName ?? "", p.User?.Email ?? "",
+        p.DoorId, p.Door?.Name ?? "",
+        p.CanOpen, p.CanLock,
+        p.AllowedFromTime, p.AllowedToTime,
+        p.GrantedAt);
 }

@@ -1,0 +1,415 @@
+@page "/profile"
+@using AccessControll.Blazor.Services
+@using Microsoft.AspNetCore.Authorization
+@using Net.Codecrete.QrCodeGenerator
+@attribute [Authorize]
+@inject IProfileService ProfileService
+@inject NavigationManager Nav
+
+<PageTitle>پروفایل من — AccessControll</PageTitle>
+
+<div class="page" dir="rtl">
+    <div class="page-header">
+        <h1>⚙️ پروفایل من</h1>
+    </div>
+
+    @if (_loading)
+    {
+        <div class="loading">در حال بارگذاری...</div>
+    }
+    else if (_profile != null)
+    {
+        <div class="profile-grid">
+
+            <!-- Profile Info Card -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-icon">👤</span>
+                    <h2>اطلاعات حساب</h2>
+                </div>
+                <div class="card-body">
+                    <div class="user-avatar">
+                        <span>@(_profile.FullName?.Substring(0,1).ToUpper() ?? "?")</span>
+                    </div>
+                    <div class="info-row">
+                        <label>ایمیل</label>
+                        <span class="info-value dir-ltr">@_profile.Email</span>
+                    </div>
+                    <div class="info-row">
+                        <label>نقش‌ها</label>
+                        <div class="roles-list">
+                            @foreach (var role in _profile.Roles)
+                            {
+                                <span class="role-tag">@role</span>
+                            }
+                        </div>
+                    </div>
+                    <div class="info-row">
+                        <label>وضعیت ۲FA</label>
+                        <span class="badge @(_profile.TwoFactorEnabled ? "badge-success" : "badge-muted")">
+                            @(_profile.TwoFactorEnabled ? "فعال" : "غیرفعال")
+                        </span>
+                    </div>
+
+                    <div class="form-divider">ویرایش نام</div>
+                    <div class="form-row">
+                        <label>نام کامل</label>
+                        <input type="text" @bind="_editName" class="form-input" placeholder="نام و نام خانوادگی" />
+                    </div>
+                    @if (!string.IsNullOrEmpty(_nameMsg))
+                    {
+                        <div class="msg @(_nameSuccess ? "msg-success" : "msg-error")">@_nameMsg</div>
+                    }
+                    <button class="btn-primary mt-10" @onclick="SaveName" disabled="@_savingName">
+                        @(_savingName ? "ذخیره..." : "ذخیره نام")
+                    </button>
+                </div>
+            </div>
+
+            <!-- Change Password Card -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-icon">🔑</span>
+                    <h2>تغییر رمز عبور</h2>
+                </div>
+                <div class="card-body">
+                    <div class="form-row">
+                        <label>رمز عبور فعلی</label>
+                        <input type="password" @bind="_currentPwd" class="form-input" placeholder="••••••••" />
+                    </div>
+                    <div class="form-row">
+                        <label>رمز عبور جدید</label>
+                        <input type="password" @bind="_newPwd" class="form-input" placeholder="••••••••" />
+                    </div>
+                    <div class="form-row">
+                        <label>تکرار رمز عبور جدید</label>
+                        <input type="password" @bind="_confirmPwd" class="form-input" placeholder="••••••••" />
+                    </div>
+                    @if (!string.IsNullOrEmpty(_pwdMsg))
+                    {
+                        <div class="msg @(_pwdSuccess ? "msg-success" : "msg-error")">@_pwdMsg</div>
+                    }
+                    <button class="btn-primary mt-10" @onclick="ChangePassword" disabled="@_savingPwd">
+                        @(_savingPwd ? "در حال تغییر..." : "تغییر رمز عبور")
+                    </button>
+                </div>
+            </div>
+
+            <!-- 2FA Card -->
+            <div class="card card-full">
+                <div class="card-header">
+                    <span class="card-icon">📱</span>
+                    <h2>احراز هویت دو مرحله‌ای (2FA)</h2>
+                    <span class="badge @(_profile.TwoFactorEnabled ? "badge-success" : "badge-muted") mr-auto">
+                        @(_profile.TwoFactorEnabled ? "فعال" : "غیرفعال")
+                    </span>
+                </div>
+                <div class="card-body">
+
+                    @if (!_profile.TwoFactorEnabled)
+                    {
+                        @if (_qrSetup == null)
+                        {
+                            <p class="hint-text">
+                                با فعال کردن احراز هویت دو مرحله‌ای، امنیت حساب شما به طور قابل توجهی افزایش می‌یابد.
+                                برای شروع روی دکمه زیر کلیک کنید.
+                            </p>
+                            @if (!string.IsNullOrEmpty(_tfaMsg))
+                            {
+                                <div class="msg @(_tfaSuccess ? "msg-success" : "msg-error")">@_tfaMsg</div>
+                            }
+                            <button class="btn-primary" @onclick="Setup2FA" disabled="@_tfa2Loading">
+                                @(_tfa2Loading ? "در حال پردازش..." : "راه‌اندازی ۲FA")
+                            </button>
+                        }
+                        else
+                        {
+                            <div class="setup-container">
+                                <div class="setup-steps">
+                                    <div class="step">
+                                        <div class="step-num">۱</div>
+                                        <p>اپ احراز هویت (مثل Google Authenticator یا Authy) را روی گوشی خود نصب کنید</p>
+                                    </div>
+                                    <div class="step">
+                                        <div class="step-num">۲</div>
+                                        <p>QR کد زیر را با اپ اسکن کنید</p>
+                                    </div>
+                                    <div class="step">
+                                        <div class="step-num">۳</div>
+                                        <p>کد ۶ رقمی نمایش داده شده در اپ را در فیلد زیر وارد کنید</p>
+                                    </div>
+                                </div>
+
+                                <div class="qr-section">
+                                    @if (_qrSvg != null)
+                                    {
+                                        <div class="qr-code">@((MarkupString)_qrSvg)</div>
+                                    }
+                                    <div class="secret-key">
+                                        <label>کلید دستی (اگر اسکن نمی‌شود):</label>
+                                        <code class="dir-ltr">@_qrSetup.SecretKey</code>
+                                    </div>
+                                </div>
+
+                                <div class="verify-section">
+                                    <div class="form-row">
+                                        <label>کد تأیید (۶ رقم)</label>
+                                        <input type="text" @bind="_verifyCode" class="form-input code-input"
+                                               maxlength="6" placeholder="123456" />
+                                    </div>
+                                    @if (!string.IsNullOrEmpty(_tfaMsg))
+                                    {
+                                        <div class="msg @(_tfaSuccess ? "msg-success" : "msg-error")">@_tfaMsg</div>
+                                    }
+                                    <div class="btn-row">
+                                        <button class="btn-primary" @onclick="Verify2FA" disabled="@_tfa2Loading">
+                                            @(_tfa2Loading ? "در حال تأیید..." : "تأیید و فعال‌سازی")
+                                        </button>
+                                        <button class="btn-secondary" @onclick="CancelSetup">انصراف</button>
+                                    </div>
+                                </div>
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        <p class="hint-text">احراز هویت دو مرحله‌ای برای حساب شما فعال است.</p>
+                        @if (!string.IsNullOrEmpty(_tfaMsg))
+                        {
+                            <div class="msg @(_tfaSuccess ? "msg-success" : "msg-error")">@_tfaMsg</div>
+                        }
+                        <button class="btn-danger" @onclick="Disable2FA" disabled="@_tfa2Loading">
+                            @(_tfa2Loading ? "در حال غیرفعال‌سازی..." : "غیرفعال کردن ۲FA")
+                        </button>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private ProfileDto? _profile;
+    private bool _loading = true;
+
+    // Name edit
+    private string _editName = "";
+    private bool _savingName;
+    private string _nameMsg = "";
+    private bool _nameSuccess;
+
+    // Password
+    private string _currentPwd = "", _newPwd = "", _confirmPwd = "";
+    private bool _savingPwd;
+    private string _pwdMsg = "";
+    private bool _pwdSuccess;
+
+    // 2FA
+    private TwoFactorSetupResponse? _qrSetup;
+    private string? _qrSvg;
+    private string _verifyCode = "";
+    private bool _tfa2Loading;
+    private string _tfaMsg = "";
+    private bool _tfaSuccess;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _profile = await ProfileService.GetAsync();
+        if (_profile != null)
+            _editName = _profile.FullName ?? "";
+        _loading = false;
+    }
+
+    private async Task SaveName()
+    {
+        if (string.IsNullOrWhiteSpace(_editName)) { _nameMsg = "نام الزامی است"; _nameSuccess = false; return; }
+        _savingName = true;
+        var result = await ProfileService.UpdateAsync(_editName.Trim());
+        if (result != null)
+        {
+            _profile = result;
+            _nameMsg = "نام با موفقیت به‌روزرسانی شد";
+            _nameSuccess = true;
+        }
+        else
+        {
+            _nameMsg = "خطا در به‌روزرسانی نام";
+            _nameSuccess = false;
+        }
+        _savingName = false;
+    }
+
+    private async Task ChangePassword()
+    {
+        _pwdMsg = "";
+        if (string.IsNullOrWhiteSpace(_newPwd)) { _pwdMsg = "رمز عبور جدید الزامی است"; _pwdSuccess = false; return; }
+        if (_newPwd != _confirmPwd) { _pwdMsg = "رمز عبور جدید و تکرار آن مطابقت ندارند"; _pwdSuccess = false; return; }
+
+        _savingPwd = true;
+        var (success, error) = await ProfileService.ChangePasswordAsync(_currentPwd, _newPwd);
+        _pwdSuccess = success;
+        _pwdMsg = success ? "رمز عبور با موفقیت تغییر یافت" : (error ?? "خطا در تغییر رمز عبور");
+        if (success) { _currentPwd = ""; _newPwd = ""; _confirmPwd = ""; }
+        _savingPwd = false;
+    }
+
+    private async Task Setup2FA()
+    {
+        _tfa2Loading = true;
+        _tfaMsg = "";
+        var setup = await ProfileService.Setup2FAAsync();
+        if (setup != null)
+        {
+            _qrSetup = setup;
+            var qr = QrCode.EncodeText(setup.QrCodeUri, QrCode.Ecc.Medium);
+            _qrSvg = qr.ToSvgString(4);
+        }
+        else
+        {
+            _tfaMsg = "خطا در راه‌اندازی ۲FA";
+            _tfaSuccess = false;
+        }
+        _tfa2Loading = false;
+    }
+
+    private async Task Verify2FA()
+    {
+        if (string.IsNullOrWhiteSpace(_verifyCode)) { _tfaMsg = "کد تأیید الزامی است"; _tfaSuccess = false; return; }
+        _tfa2Loading = true;
+        _tfaMsg = "";
+        var ok = await ProfileService.Verify2FAAsync(_verifyCode);
+        _tfaSuccess = ok;
+        _tfaMsg = ok ? "۲FA با موفقیت فعال شد" : "کد نامعتبر است. دوباره امتحان کنید";
+        if (ok)
+        {
+            _qrSetup = null;
+            _qrSvg = null;
+            _verifyCode = "";
+            _profile = await ProfileService.GetAsync();
+        }
+        _tfa2Loading = false;
+    }
+
+    private void CancelSetup() { _qrSetup = null; _qrSvg = null; _verifyCode = ""; _tfaMsg = ""; }
+
+    private async Task Disable2FA()
+    {
+        _tfa2Loading = true;
+        _tfaMsg = "";
+        var ok = await ProfileService.Disable2FAAsync();
+        _tfaSuccess = ok;
+        _tfaMsg = ok ? "۲FA غیرفعال شد" : "خطا در غیرفعال‌سازی";
+        if (ok) _profile = await ProfileService.GetAsync();
+        _tfa2Loading = false;
+    }
+}
+
+<style>
+    .page { direction: rtl; }
+    .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px; }
+    .page-header h1 { font-size: 24px; font-weight: 700; color: #1a1a2e; }
+
+    .profile-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; }
+    .card-full { grid-column: 1 / -1; }
+
+    .card {
+        background: white; border-radius: 16px; box-shadow: 0 2px 16px rgba(0,0,0,0.08);
+        overflow: hidden;
+    }
+    .card-header {
+        display: flex; align-items: center; gap: 12px;
+        padding: 18px 24px; background: #f8f9ff; border-bottom: 1px solid #eef0f8;
+    }
+    .card-icon { font-size: 24px; }
+    .card-header h2 { font-size: 16px; font-weight: 600; color: #1a1a2e; flex: 1; }
+    .card-body { padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+
+    .user-avatar {
+        width: 72px; height: 72px; border-radius: 50%; background: linear-gradient(135deg, #0a192f, #0f3460);
+        color: white; font-size: 28px; font-weight: 700;
+        display: flex; align-items: center; justify-content: center; margin: 0 auto 8px;
+    }
+
+    .info-row { display: flex; align-items: center; gap: 12px; font-size: 14px; }
+    .info-row label { font-weight: 600; color: #555; min-width: 80px; }
+    .info-value { color: #333; }
+    .dir-ltr { direction: ltr; }
+
+    .roles-list { display: flex; gap: 6px; flex-wrap: wrap; }
+    .role-tag { background: #e8f0fe; color: #1a73e8; font-size: 12px; padding: 3px 10px; border-radius: 20px; }
+
+    .badge { font-size: 12px; padding: 4px 12px; border-radius: 20px; font-weight: 500; }
+    .badge-success { background: #d4edda; color: #1a7a3c; }
+    .badge-muted { background: #f0f0f0; color: #888; }
+    .mr-auto { margin-right: auto; }
+
+    .form-divider {
+        font-size: 12px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.5px;
+        border-top: 1px solid #f0f0f0; padding-top: 16px; margin-top: 4px;
+    }
+    .form-row { display: flex; flex-direction: column; gap: 6px; }
+    .form-row label { font-size: 13px; font-weight: 500; color: #374151; }
+    .form-input {
+        padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 8px;
+        font-size: 14px; outline: none; transition: border-color 0.2s; width: 100%; box-sizing: border-box;
+    }
+    .form-input:focus { border-color: #0a192f; }
+    .code-input { text-align: center; font-size: 22px; letter-spacing: 6px; direction: ltr; }
+
+    .msg { padding: 10px 14px; border-radius: 8px; font-size: 13px; }
+    .msg-success { background: #d4edda; color: #1a7a3c; border: 1px solid #a8ddb8; }
+    .msg-error { background: #fdecea; color: #c00; border: 1px solid #ffb3b3; }
+
+    .btn-primary {
+        background: #0a192f; color: white; padding: 11px 22px; border: none; border-radius: 8px;
+        font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s; align-self: flex-start;
+    }
+    .btn-primary:hover:not(:disabled) { background: #0f3460; }
+    .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+    .btn-secondary {
+        background: #f0f0f0; color: #333; padding: 11px 22px; border: none; border-radius: 8px;
+        font-size: 14px; cursor: pointer;
+    }
+    .btn-danger {
+        background: #dc2626; color: white; padding: 11px 22px; border: none; border-radius: 8px;
+        font-size: 14px; font-weight: 500; cursor: pointer; align-self: flex-start;
+    }
+    .btn-danger:hover:not(:disabled) { background: #b91c1c; }
+    .btn-danger:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .btn-row { display: flex; gap: 10px; }
+    .mt-10 { margin-top: 10px; }
+
+    .hint-text { font-size: 14px; color: #555; line-height: 1.7; }
+
+    /* Setup steps */
+    .setup-container { display: flex; flex-direction: column; gap: 24px; }
+    .setup-steps { display: flex; gap: 20px; }
+    .step { display: flex; align-items: flex-start; gap: 12px; flex: 1; }
+    .step-num {
+        width: 32px; height: 32px; border-radius: 50%; background: #0a192f; color: white;
+        display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; flex-shrink: 0;
+    }
+    .step p { font-size: 13px; color: #444; line-height: 1.6; margin-top: 6px; }
+
+    .qr-section { display: flex; align-items: center; gap: 24px; }
+    .qr-code { background: white; padding: 12px; border: 2px solid #e0e0e0; border-radius: 12px; }
+    .qr-code svg { display: block; width: 180px; height: 180px; }
+    .secret-key { display: flex; flex-direction: column; gap: 8px; }
+    .secret-key label { font-size: 13px; color: #555; font-weight: 500; }
+    .secret-key code {
+        font-size: 14px; background: #f5f5f5; padding: 8px 12px; border-radius: 6px;
+        letter-spacing: 2px; word-break: break-all;
+    }
+
+    .verify-section { border-top: 1px solid #f0f0f0; padding-top: 20px; display: flex; flex-direction: column; gap: 14px; }
+
+    .loading { padding: 60px; text-align: center; color: #888; font-size: 15px; }
+
+    @@media (max-width: 900px) {
+        .profile-grid { grid-template-columns: 1fr; }
+        .card-full { grid-column: auto; }
+        .setup-steps { flex-direction: column; }
+        .qr-section { flex-direction: column; }
+    }
+</style>

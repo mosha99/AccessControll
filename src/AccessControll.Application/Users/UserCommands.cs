@@ -1,23 +1,32 @@
 using MediatR;
 using Microsoft.AspNetCore.Identity;
 using AccessControll.Domain.Entities;
+using AccessControll.Contracts.Users;
 
 namespace AccessControll.Application.Users;
 
-// ── DTOs ──────────────────────────────────────────────────────────────────────
-
-public record UserDto(string Id, string Email, string FullName, bool IsActive, bool TwoFactorEnabled, DateTime CreatedAt, DateTime? LastLoginAt, IList<string> Roles);
-public record CreateUserRequest(string Email, string FullName, string Password, List<string> Roles);
-public record UpdateUserRequest(string Id, string FullName, bool IsActive, List<string> Roles);
-
 // ── Queries & Commands ────────────────────────────────────────────────────────
 
-public record GetAllUsersQuery(int Page = 1, int PageSize = 20) : IRequest<(IEnumerable<UserDto> Users, int Total)>;
-public record GetUserByIdQuery(string Id) : IRequest<UserDto?>;
-public record CreateUserCommand(string Email, string FullName, string Password, List<string> Roles) : IRequest<(bool Succeeded, IEnumerable<string> Errors)>;
-public record UpdateUserCommand(string Id, string FullName, bool IsActive, List<string> Roles) : IRequest<bool>;
-public record DeleteUserCommand(string Id) : IRequest<bool>;
-public record ToggleUserActiveCommand(string Id) : IRequest<bool>;
+public record GetAllUsersQuery(int Page = 1, int PageSize = 20)
+    : IRequest<(IEnumerable<UserDto> Users, int Total)>;
+
+public record GetUserByIdQuery(string Id)
+    : IRequest<UserDto?>;
+
+public record GetCurrentUserProfileQuery(string UserId)
+    : IRequest<ProfileDto?>;
+
+public record CreateUserCommand(string Email, string FullName, string Password, List<string> Roles)
+    : IRequest<(bool Succeeded, IEnumerable<string> Errors)>;
+
+public record UpdateUserCommand(string Id, string FullName, bool IsActive, List<string> Roles)
+    : IRequest<bool>;
+
+public record DeleteUserCommand(string Id)
+    : IRequest<bool>;
+
+public record ToggleUserActiveCommand(string Id)
+    : IRequest<bool>;
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
@@ -36,7 +45,7 @@ public class GetAllUsersQueryHandler : IRequestHandler<GetAllUsersQuery, (IEnume
         foreach (var u in paged)
         {
             var roles = await _userManager.GetRolesAsync(u);
-            dtos.Add(new UserDto(u.Id, u.Email ?? "", u.FullName, u.IsActive, u.TwoFactorEnabled, u.CreatedAt, u.LastLoginAt, roles));
+            dtos.Add(u.ToDto(roles));
         }
         return (dtos, total);
     }
@@ -52,7 +61,22 @@ public class GetUserByIdQueryHandler : IRequestHandler<GetUserByIdQuery, UserDto
         var user = await _userManager.FindByIdAsync(request.Id);
         if (user == null) return null;
         var roles = await _userManager.GetRolesAsync(user);
-        return new UserDto(user.Id, user.Email ?? "", user.FullName, user.IsActive, user.TwoFactorEnabled, user.CreatedAt, user.LastLoginAt, roles);
+        return user.ToDto(roles);
+    }
+}
+
+public class GetCurrentUserProfileQueryHandler : IRequestHandler<GetCurrentUserProfileQuery, ProfileDto?>
+{
+    private readonly UserManager<ApplicationUser> _userManager;
+    public GetCurrentUserProfileQueryHandler(UserManager<ApplicationUser> userManager) => _userManager = userManager;
+
+    public async Task<ProfileDto?> Handle(GetCurrentUserProfileQuery request, CancellationToken ct)
+    {
+        var user = await _userManager.FindByIdAsync(request.UserId);
+        if (user == null) return null;
+        var roles = await _userManager.GetRolesAsync(user);
+        return new ProfileDto(user.Id, user.Email ?? "", user.FullName,
+            user.TwoFactorEnabled, user.CreatedAt, user.LastLoginAt, roles);
     }
 }
 
@@ -132,4 +156,12 @@ public class ToggleUserActiveCommandHandler : IRequestHandler<ToggleUserActiveCo
         await _userManager.UpdateAsync(user);
         return user.IsActive;
     }
+}
+
+// ── Mapping helpers ───────────────────────────────────────────────────────────
+
+internal static class UserMappingExtensions
+{
+    public static UserDto ToDto(this ApplicationUser u, IList<string> roles) =>
+        new(u.Id, u.Email ?? "", u.FullName, u.IsActive, u.TwoFactorEnabled, u.CreatedAt, u.LastLoginAt, roles);
 }

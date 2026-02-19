@@ -1,4 +1,7 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+﻿using AccessControll.Application.Auth;
+using AccessControll.Application.Doors;
+using MediatR;
+using Microsoft.Extensions.DependencyInjection;
 using SixLabors.ImageSharp;
 
 namespace AccessControll.Hardware;
@@ -6,15 +9,19 @@ namespace AccessControll.Hardware;
 public class PhysicalAuthService
 {
     private readonly Oled _oled;
+
+    private readonly PhysicalDoorService physicalDoorService;
+
     private readonly IServiceScopeFactory _scopeFactory;
 
     private static string _inputBuffer = "";
     private const int CodeLength = 6;
 
-    public PhysicalAuthService(Oled oled, IServiceScopeFactory scopeFactory)
+    public PhysicalAuthService(Oled oled, IServiceScopeFactory scopeFactory, PhysicalDoorService physicalDoorService)
     {
         _oled = oled;
         _scopeFactory = scopeFactory;
+        this.physicalDoorService = physicalDoorService;
     }
 
     public void Init()
@@ -50,26 +57,43 @@ public class PhysicalAuthService
         _inputBuffer = "";
 
         using IServiceScope scope = _scopeFactory.CreateScope();
-        // TODO: سرویس verify رو از scope بگیر و کد رو چک کن
-        // var totpService = scope.ServiceProvider.GetRequiredService<ITotpService>();
-        // bool isValid = await totpService.VerifyAsync(code);
 
-        bool isValid = false; // placeholder
+        var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
-        if (isValid)
+        var result = await mediator.Send(new _2FALoginCommand(code));
+
+        if (result.Succeeded)
         {
-            _oled.RenderUI("دسترسی مجاز", "✓ خوش آمدید", Color.White);
+            _oled.RenderUI("درحال پردازش", result.Name!, Color.White);
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            var doorCode = await physicalDoorService.ReadDoorCode();
+            if (doorCode != null)
+            {
+                var doorResult = await mediator.Send(new ControlDoorCommand(null, doorCode.Value, result.UserId!, false, "0.0.0.0"));
+
+                if (doorResult.Succeeded) 
+                {
+                    _oled.RenderUI("دسترسی مجاز", "✓ خوش آمدید", Color.White);
+                    await Task.Delay(1000);
+                    await mediator.Send(new ControlDoorCommand(null, doorCode.Value, result.UserId!, true, "0.0.0.0"));
+                }
+                else
+                {
+                    _oled.RenderUI("دسترسی مجاز", doorResult.Message, Color.White);
+
+                }
+            }
         }
         else
         {
             _oled.RenderUI("دسترسی غیرمجاز", "✗ کد اشتباه است", Color.White);
         }
 
-        await Task.Delay(2000);
+        await Task.Delay(3000);
         UpdateUI();
     }
 
-    private void UpdateUI()
+    private void UpdateUI(string title = "کد 2FA را بزنید:")
     {
         int length = _inputBuffer.Length;
 
@@ -84,6 +108,6 @@ public class PhysicalAuthService
             _ => $"{_inputBuffer[0]} {_inputBuffer[1]} {_inputBuffer[2]}   {_inputBuffer[3]} {_inputBuffer[4]} {_inputBuffer[5]}"
         };
 
-        _oled.RenderUI("کد 2FA را بزنید:", body, Color.White);
+        _oled.RenderUI(title, body, Color.White);
     }
 }

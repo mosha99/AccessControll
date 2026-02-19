@@ -6,6 +6,8 @@
     <UserSecretsId>accesscontroll-secrets</UserSecretsId>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="..\AccessControll.Contracts\AccessControll.Contracts.csproj" />
+    <ProjectReference Include="..\..\AccessControll.Hardware\AccessControll.Hardware.csproj" />
     <ProjectReference Include="..\AccessControll.Application\AccessControll.Application.csproj" />
     <ProjectReference Include="..\AccessControll.Infrastructure\AccessControll.Infrastructure.csproj" />
     <!-- MediatR 12 — DI registration is built-in, no separate extension needed -->

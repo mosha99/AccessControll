@@ -159,17 +159,10 @@ void oledShowStatus(String line1, String line2 = "", String line3 = "") {
 }
 
 void oledRenderBuffer(uint8_t* buf) {
-  Wire.beginTransmission(OLED_ADDR);
-  Wire.write(0x00);
-  Wire.write(0x21); Wire.write(0x00); Wire.write(0x7F);
-  Wire.write(0x22); Wire.write(0x00); Wire.write(0x07);
-  Wire.endTransmission();
-  for (int i = 0; i < 1024; i += 16) {
-    Wire.beginTransmission(OLED_ADDR);
-    Wire.write(0x40);
-    for (int j = 0; j < 16; j++) Wire.write(buf[i + j]);
-    Wire.endTransmission();
-  }
+  // Copy into Adafruit's own buffer, then let display.display() send it.
+  // Direct I2C writes conflict with Adafruit's hardware state after init.
+  memcpy(display.getBuffer(), buf, 1024);
+  display.display();
 }
 
 // ── Base64 Decode ─────────────────────────────────
@@ -178,14 +171,14 @@ static const char B64T[] =
 
 int b64Decode(const char* in, uint8_t* out, int maxOut) {
   int n = 0, len = strlen(in);
-  for (int i = 0; i + 3 < len && n + 2 < maxOut; i += 4) {
+  for (int i = 0; i + 3 < len; i += 4) {
     uint8_t a = strchr(B64T, in[i])   - B64T;
     uint8_t b = strchr(B64T, in[i+1]) - B64T;
     uint8_t c = (in[i+2]!='=') ? (uint8_t)(strchr(B64T,in[i+2])-B64T) : 0;
     uint8_t d = (in[i+3]!='=') ? (uint8_t)(strchr(B64T,in[i+3])-B64T) : 0;
     if (n < maxOut) out[n++] = (a << 2) | (b >> 4);
-    if (n < maxOut) out[n++] = (b << 4) | (c >> 2);
-    if (n < maxOut) out[n++] = (c << 6) | d;
+    if (n < maxOut && in[i+2] != '=') out[n++] = (b << 4) | (c >> 2);
+    if (n < maxOut && in[i+3] != '=') out[n++] = (c << 6) | d;
   }
   return n;
 }
@@ -196,6 +189,20 @@ void signalRHandshake() {
   msg += (char)0x1E;
   ws.sendTXT(msg);
   logMessage("SignalR: Handshake sent");
+}
+
+// Called once after handshake ACK (type 6) — identifies this device by MAC address
+void registerStation() {
+  String mac = WiFi.macAddress(); // e.g. "AA:BB:CC:DD:EE:FF"
+  StaticJsonDocument<200> doc;
+  doc["type"]   = 1;
+  doc["target"] = "RegisterStation";
+  doc.createNestedArray("arguments").add(mac);
+  String msg;
+  serializeJson(doc, msg);
+  msg += (char)0x1E;
+  ws.sendTXT(msg);
+  logMessage(">> RegisterStation: " + mac);
 }
 
 void sendKey(char key) {
@@ -211,6 +218,7 @@ void sendKey(char key) {
 }
 
 void handleServerMessage(uint8_t* payload, size_t length) {
+  logMessage("WS RX len=" + String(length) + " [" + String((char*)payload).substring(0, 60) + "]");
   String raw = String((char*)payload);
   int start = 0;
   while (start < (int)raw.length()) {
@@ -220,31 +228,52 @@ void handleServerMessage(uint8_t* payload, size_t length) {
     start = end + 1;
     if (chunk.length() < 2) continue;
 
-    DynamicJsonDocument doc(2048);
+    // ── Fast path: RenderDisplay carries a ~1368-char base64 payload.
+    //    DynamicJsonDocument cannot reliably hold it on the ESP8266 heap,
+    //    so we extract the base64 string directly via string search.
+    if (chunk.indexOf("\"RenderDisplay\"") > 0) {
+      int b64Start = chunk.indexOf("[\"") + 2;      // step past ["
+      int b64End   = (b64Start > 1) ? chunk.indexOf('"', b64Start) : -1;
+      if (b64Start < 2 || b64End <= b64Start) {
+        logMessage("ERR: RenderDisplay fmt");
+        continue;
+      }
+      String b64 = chunk.substring(b64Start, b64End);
+      logMessage(">> RenderDisplay len=" + String(b64.length()));
+      uint8_t* buf = (uint8_t*)malloc(1024);
+      if (!buf) { logMessage("ERR: malloc"); continue; }
+      int n = b64Decode(b64.c_str(), buf, 1024);
+      if (n == 1024) {
+        oledRenderBuffer(buf);
+        logMessage(">> Display updated");
+      } else {
+        logMessage("ERR: decoded=" + String(n));
+      }
+      free(buf);
+      continue;
+    }
+
+    // ── Normal path: small messages (handshake, ping, PowerState, …) ─
+    StaticJsonDocument<256> doc;
     if (deserializeJson(doc, chunk) != DeserializationError::Ok) continue;
 
     int type = doc["type"] | 0;
-    if (type == 6) continue;
+    if (type == 0) {
+      // SignalR handshake ACK is an empty {} with no "type" field.
+      // Register immediately — before any pings arrive.
+      logMessage("SignalR: Handshake ACK -> registering");
+      registerStation();
+      continue;
+    }
+    if (type == 6) {
+      // SignalR keep-alive ping — ignore, no response needed.
+      continue;
+    }
 
     if (type == 1) {
       const char* target = doc["target"] | "";
 
-      if (strcmp(target, "RenderDisplay") == 0) {
-        const char* b64 = doc["arguments"][0];
-        if (!b64) return;
-        uint8_t* buf = (uint8_t*)malloc(1024);
-        if (!buf) { logMessage("ERR: malloc failed"); return; }
-        int n = b64Decode(b64, buf, 1024);
-        if (n == 1024) {
-          oledRenderBuffer(buf);
-          logMessage(">> Display updated");
-        } else {
-          logMessage("ERR: decoded=" + String(n));
-        }
-        free(buf);
-      }
-
-      else if (strcmp(target, "PowerState") == 0) {
+      if (strcmp(target, "PowerState") == 0) {
         bool on = doc["arguments"][0];
         Wire.beginTransmission(OLED_ADDR);
         Wire.write(0x00);
@@ -256,27 +285,77 @@ void handleServerMessage(uint8_t* payload, size_t length) {
   }
 }
 
+// ── Fragment reassembly buffer ────────────────────
+// ASP.NET Core SignalR sends large messages as multiple WebSocket
+// continuation frames. We reassemble them before passing to handleServerMessage.
+static String _fragBuf = "";
+
 // ── WebSocket Events ──────────────────────────────
 void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
   switch (type) {
     case WStype_CONNECTED:
       wsConnected = true;
+      _fragBuf = "";
       logMessage("WS: Connected");
       oledShowStatus("Connected!", WS_HOST);
       signalRHandshake();
       break;
     case WStype_DISCONNECTED:
       wsConnected = false;
+      _fragBuf = "";
       logMessage("WS: Disconnected");
       oledShowStatus("Disconnected", "Retrying...");
       break;
+
+    // Complete single-frame message (small messages: handshake ACK, pings)
     case WStype_TEXT:
       handleServerMessage(payload, length);
       break;
+
+    // First fragment of a multi-frame message
+    case WStype_FRAGMENT_TEXT_START:
+      _fragBuf = String((char*)payload);
+      logMessage("WS FRAG START len=" + String(length));
+      break;
+
+    // Middle fragment(s)
+    case WStype_FRAGMENT:
+      _fragBuf += String((char*)payload);
+      logMessage("WS FRAG MID len=" + String(length));
+      break;
+
+    // Final fragment — assemble and process.
+    // For RenderDisplay we decode *directly* from _fragBuf to avoid allocating
+    // a second 1419-byte String copy (peak drops from ~6.6 KB to ~2.4 KB).
+    case WStype_FRAGMENT_FIN:
+      _fragBuf += String((char*)payload);
+      logMessage("WS FRAG END total=" + String(_fragBuf.length()));
+      if (_fragBuf.indexOf("\"RenderDisplay\"") > 0) {
+        int b64S = _fragBuf.indexOf("[\"") + 2;
+        int b64E = (b64S > 1) ? _fragBuf.indexOf('"', b64S) : -1;
+        if (b64S >= 2 && b64E > b64S) {
+          logMessage(">> RenderDisplay len=" + String(b64E - b64S));
+          uint8_t* buf = (uint8_t*)malloc(1024);
+          if (buf) {
+            _fragBuf[b64E] = '\0';                    // temp-terminate in place
+            int n = b64Decode(_fragBuf.c_str() + b64S, buf, 1024);
+            if (n == 1024) { oledRenderBuffer(buf); logMessage(">> Display updated"); }
+            else            { logMessage("ERR: decoded=" + String(n)); }
+            free(buf);
+          } else { logMessage("ERR: malloc"); }
+        } else { logMessage("ERR: RD fmt"); }
+      } else {
+        handleServerMessage((uint8_t*)_fragBuf.c_str(), _fragBuf.length());
+      }
+      _fragBuf = "";
+      break;
+
     case WStype_ERROR:
       logMessage("WS: Error");
       break;
-    default: break;
+    default:
+      logMessage("WS: evt=" + String((int)type));
+      break;
   }
 }
 

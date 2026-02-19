@@ -2,7 +2,7 @@
 
 namespace AccessControll.Hardware;
 
-public class PhysicalDoorService(Oled Oled, Keypad Keypad)
+public class PhysicalDoorService(Oled Oled, KeyboardRouter Router)
 {
     private static string _inputBuffer = "";
     private const int CodeLength = 2;
@@ -16,23 +16,20 @@ public class PhysicalDoorService(Oled Oled, Keypad Keypad)
 
         Task.Run(async () =>
         {
-            var lisstener = Keypad.OnPress.GetInvocationList();
+            // Save current subscribers and temporarily replace with door-code handler
+            var listeners = Router.OnPress?.GetInvocationList() ?? [];
 
-            Keypad.OnPress = c => OnKeyPress(c, code => task.SetResult(code));
+            Router.OnPress = c => OnKeyPress(c, code => task.SetResult(code));
 
             await Task.Delay(TimeSpan.FromSeconds(5));
 
-            Keypad.OnPress = null;
+            // Restore previous subscribers
+            Router.OnPress = null;
+            foreach (var item in listeners)
+                Router.OnPress += item as Action<char> ?? throw new Exception();
 
-            foreach (var item in lisstener)
-            {
-                Keypad.OnPress += item as Action<char> ?? throw new Exception();
-            }
-
-            if (task.Task.IsCompleted)
-            {
+            if (!task.Task.IsCompleted)
                 task.SetResult(null);
-            }
         });
 
         return task.Task;

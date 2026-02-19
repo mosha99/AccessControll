@@ -15,6 +15,7 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
     public DbSet<Door> Doors => Set<Door>();
     public DbSet<DoorAccessLog> DoorAccessLogs => Set<DoorAccessLog>();
     public DbSet<UserDoorPermission> UserDoorPermissions => Set<UserDoorPermission>();
+    public DbSet<Station> Stations => Set<Station>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -64,6 +65,15 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
                 .HasForeignKey(p => p.UserId)
                 .OnDelete(DeleteBehavior.Cascade);
             e.HasIndex(p => new { p.UserId, p.DoorId }).IsUnique();
+        });
+
+        // Station
+        builder.Entity<Station>(e =>
+        {
+            e.HasKey(s => s.Id);
+            e.Property(s => s.MacAddress).HasMaxLength(17).IsRequired();
+            e.Property(s => s.Name).HasMaxLength(200).IsRequired();
+            e.HasIndex(s => s.MacAddress).IsUnique();
         });
 
         // Seed default roles

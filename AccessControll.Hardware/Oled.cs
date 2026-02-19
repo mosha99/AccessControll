@@ -15,8 +15,17 @@ public class Oled
     private const int I2cBus = 3;
     private const int OledAddress = 60;
 
-    private I2cDevice _displayI2c;
-    private Font _farsiFont;
+    private I2cDevice? _displayI2c;
+    private Font? _farsiFont;
+
+    /// <summary>
+    /// Called with the raw 1024-byte SSD1306 frame buffer after every render.
+    /// Wire this to HardwareHub to broadcast display to all ESP8266s.
+    /// </summary>
+    public Func<byte[], Task>? OnBuffer { get; set; }
+
+    /// <summary>Last rendered buffer — sent to newly connected ESP8266s.</summary>
+    public byte[]? LastBuffer { get; private set; }
 
     public Oled(ILogger<Oled> logger)
     {
@@ -25,13 +34,21 @@ public class Oled
 
     public void Init()
     {
-        _displayI2c = I2cDevice.Create(new I2cConnectionSettings(I2cBus, OledAddress));
-        InitializeOled();
+        try
+        {
+            _displayI2c = I2cDevice.Create(new I2cConnectionSettings(I2cBus, OledAddress));
+            InitializeOled();
+            _logger.LogDebug("Oled: local I2C display initialized");
+        }
+        catch
+        {
+            _displayI2c = null;
+            _logger.LogInformation("Oled: no local I2C display — using ESP8266 display only");
+        }
         LoadFarsiFont();
-        _logger.LogDebug("Oled Initialize Success Full");
     }
 
-    public void RenderUI(string title, string body, Color borderColor)
+    public byte[] RenderUI(string title, string body, Color borderColor)
     {
         using Image<L8> image = new Image<L8>(128, 64);
 
@@ -73,10 +90,10 @@ public class Oled
             ctx.DrawText(bodyOptions, body, Color.White);
         });
 
-        RenderImageToOled(image);
+       return RenderImageToOled(image);
     }
 
-    private void RenderImageToOled(Image<L8> image)
+    private byte[] RenderImageToOled(Image<L8> image)
     {
         byte[] buffer = new byte[1024];
 
@@ -95,13 +112,22 @@ public class Oled
             }
         });
 
-        // SSD1306 commands: set column/page address + start write
-        _displayI2c.Write(new byte[] { 0x00, 0x21, 0x00, 0x7F, 0x22, 0x00, 0x07 });
+        LastBuffer = buffer;
 
-        byte[] payload = new byte[1025];
-        payload[0] = 0x40; // data mode
-        Array.Copy(buffer, 0, payload, 1, 1024);
-        _displayI2c.Write(payload);
+        // Broadcast to all connected ESP8266s
+        _ = OnBuffer?.Invoke(buffer);
+
+        // Also write to local I2C display if present
+        if (_displayI2c != null)
+        {
+            _displayI2c.Write(new byte[] { 0x00, 0x21, 0x00, 0x7F, 0x22, 0x00, 0x07 });
+            byte[] payload = new byte[1025];
+            payload[0] = 0x40;
+            Array.Copy(buffer, 0, payload, 1, 1024);
+            _displayI2c.Write(payload);
+        }
+
+        return buffer;
     }
 
     private void LoadFarsiFont()
@@ -110,6 +136,8 @@ public class Oled
         {
             if (SystemFonts.Collection.TryGet("Vazirmatn", out FontFamily fontFamily))
                 _farsiFont = fontFamily.CreateFont(14f, FontStyle.Regular);
+            else if (SystemFonts.Collection.TryGet("Vazir", out FontFamily WfontFamily))
+                _farsiFont = WfontFamily.CreateFont(14f, FontStyle.Regular);
             else
                 _farsiFont = SystemFonts.CreateFont("DejaVu Sans", 14f);
         }

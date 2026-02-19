@@ -9,7 +9,7 @@ var builder = WebAssemblyHostBuilder.CreateDefault(args);
 builder.RootComponents.Add<App>("#app");
 builder.RootComponents.Add<HeadOutlet>("head::after");
 
-var apiBaseUrl = "http://192.168.254.53:5000";
+var apiBaseUrl = "http://localhost:5000";
 
 builder.Services.AddScoped(sp => new HttpClient { BaseAddress = new Uri(apiBaseUrl) });
 builder.Services.AddBlazoredLocalStorage();
@@ -22,5 +22,6 @@ builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IRoleService, RoleService>();
 builder.Services.AddScoped<ILogService, LogService>();
 builder.Services.AddScoped<DoorHubService>();
+builder.Services.AddScoped<IStationService, StationService>();
 
 await builder.Build().RunAsync();

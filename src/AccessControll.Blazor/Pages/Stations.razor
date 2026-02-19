@@ -1,0 +1,384 @@
+@page "/stations"
+@using AccessControll.Blazor.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Roles = "Admin")]
+@inject IStationService StationService
+
+<PageTitle>مدیریت ایستگاه‌ها — AccessControll</PageTitle>
+
+<div class="page" dir="rtl">
+    <div class="page-header">
+        <h1>🖥️ مدیریت ایستگاه‌ها</h1>
+        <button class="btn-primary" @onclick="ScanNetwork" disabled="@_scanning">
+            @(_scanning ? "⏳ در حال جستجو..." : "🔍 جستجوی دستگاه‌ها")
+        </button>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_message))
+    {
+        <div class="alert @(_msgSuccess ? "alert-success" : "alert-error")">@_message</div>
+    }
+
+    <!-- ── Connected but unregistered ─────────────────────────────────────── -->
+    @if (_unregistered.Count > 0)
+    {
+        <div class="section">
+            <h2 class="section-title">📡 دستگاه‌های متصل (ثبت نشده)</h2>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>مک آدرس</th>
+                        <th>وضعیت</th>
+                        <th>عملیات</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var s in _unregistered)
+                    {
+                        <tr>
+                            <td dir="ltr">@s.MacAddress</td>
+                            <td><span class="badge badge-green">متصل</span></td>
+                            <td>
+                                <button class="btn-sm btn-primary" @onclick="@(() => OpenRegisterModal(s.MacAddress))">
+                                    + ثبت دستگاه
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    <!-- ── Registered stations ────────────────────────────────────────────── -->
+    <div class="section">
+        <h2 class="section-title">✅ دستگاه‌های ثبت شده</h2>
+
+        @if (_stations.Count == 0)
+        {
+            <div class="empty-state">هیچ دستگاهی ثبت نشده است. ابتدا جستجو را انجام دهید.</div>
+        }
+        else
+        {
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>نام</th>
+                        <th>مک آدرس</th>
+                        <th>توضیحات</th>
+                        <th>وضعیت اتصال</th>
+                        <th>وضعیت</th>
+                        <th>آخرین اتصال</th>
+                        <th>عملیات</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var s in _stations)
+                    {
+                        <tr class="@(!s.IsEnabled ? "row-disabled" : "")">
+                            <td><strong>@s.Name</strong></td>
+                            <td dir="ltr">@s.MacAddress</td>
+                            <td>@(s.Description ?? "—")</td>
+                            <td>
+                                <span class="badge @(s.IsConnected ? "badge-green" : "badge-gray")">
+                                    @(s.IsConnected ? "متصل" : "قطع")
+                                </span>
+                            </td>
+                            <td>
+                                <span class="badge @(s.IsEnabled ? "badge-blue" : "badge-gray")">
+                                    @(s.IsEnabled ? "فعال" : "غیرفعال")
+                                </span>
+                            </td>
+                            <td>@(s.LastSeen.HasValue ? s.LastSeen.Value.ToLocalTime().ToString("yy/MM/dd HH:mm") : "—")</td>
+                            <td class="actions">
+                                <button class="btn-icon" @onclick="@(() => OpenEditModal(s))" title="ویرایش">✏️</button>
+                                <button class="btn-icon btn-del" @onclick="@(() => DeleteStation(s.MacAddress))" title="حذف">🗑️</button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </div>
+</div>
+
+<!-- Register Modal -->
+@if (_showRegModal)
+{
+    <div class="modal-overlay" @onclick="CloseModals">
+        <div class="modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h3>ثبت دستگاه جدید</h3>
+                <button class="modal-close" @onclick="CloseModals">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-row">
+                    <label>مک آدرس</label>
+                    <input type="text" value="@_regForm.MacAddress" class="form-input" dir="ltr" readonly />
+                </div>
+                <div class="form-row">
+                    <label>نام دستگاه</label>
+                    <input type="text" @bind="_regForm.Name" class="form-input" placeholder="مثلاً: ایستگاه ورودی اصلی" />
+                </div>
+                <div class="form-row">
+                    <label>توضیحات (اختیاری)</label>
+                    <input type="text" @bind="_regForm.Description" class="form-input" placeholder="توضیحات" />
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" @onclick="CloseModals">انصراف</button>
+                <button class="btn-primary" @onclick="SaveRegister" disabled="@_saving">
+                    @(_saving ? "ذخیره..." : "ثبت دستگاه")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- Edit Modal -->
+@if (_showEditModal && _editTarget != null)
+{
+    <div class="modal-overlay" @onclick="CloseModals">
+        <div class="modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h3>ویرایش دستگاه</h3>
+                <button class="modal-close" @onclick="CloseModals">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-row">
+                    <label>مک آدرس</label>
+                    <input type="text" value="@_editTarget.MacAddress" class="form-input" dir="ltr" readonly />
+                </div>
+                <div class="form-row">
+                    <label>نام دستگاه</label>
+                    <input type="text" @bind="_editForm.Name" class="form-input" />
+                </div>
+                <div class="form-row">
+                    <label>توضیحات (اختیاری)</label>
+                    <input type="text" @bind="_editForm.Description" class="form-input" />
+                </div>
+                <div class="form-row">
+                    <label>وضعیت</label>
+                    <label class="toggle">
+                        <input type="checkbox" @bind="_editForm.IsEnabled" />
+                        <span class="toggle-slider"></span>
+                        <span>@(_editForm.IsEnabled ? "فعال" : "غیرفعال")</span>
+                    </label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" @onclick="CloseModals">انصراف</button>
+                <button class="btn-primary" @onclick="SaveEdit" disabled="@_saving">
+                    @(_saving ? "ذخیره..." : "ذخیره")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<StationDto> _stations = new();
+    private List<ConnectedStationDto> _unregistered = new();
+    private bool _scanning;
+    private bool _saving;
+    private string _message = "";
+    private bool _msgSuccess;
+
+    // Register modal
+    private bool _showRegModal;
+    private RegForm _regForm = new();
+
+    // Edit modal
+    private bool _showEditModal;
+    private StationDto? _editTarget;
+    private EditForm _editForm = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadStations();
+    }
+
+    private async Task LoadStations()
+    {
+        _stations = await StationService.GetAllAsync();
+    }
+
+    private async Task ScanNetwork()
+    {
+        _scanning = true;
+        StateHasChanged();
+
+        var connected = await StationService.GetConnectedAsync();
+        var registeredMacs = _stations.Select(s => s.MacAddress).ToHashSet();
+        _unregistered = connected.Where(c => !c.IsRegistered).ToList();
+
+        // Refresh registered list too (update IsConnected flags)
+        await LoadStations();
+
+        _scanning = false;
+        _message = $"جستجو انجام شد: {connected.Count} دستگاه متصل پیدا شد";
+        _msgSuccess = true;
+        StateHasChanged();
+
+        await Task.Delay(4000);
+        _message = "";
+        StateHasChanged();
+    }
+
+    private void OpenRegisterModal(string mac)
+    {
+        _regForm = new RegForm { MacAddress = mac };
+        _showRegModal = true;
+    }
+
+    private async Task SaveRegister()
+    {
+        if (string.IsNullOrWhiteSpace(_regForm.Name))
+        {
+            _message = "نام دستگاه را وارد کنید";
+            _msgSuccess = false;
+            return;
+        }
+
+        _saving = true;
+        var (ok, err) = await StationService.RegisterAsync(_regForm.MacAddress, _regForm.Name, _regForm.Description);
+        _saving = false;
+
+        if (ok)
+        {
+            _message = "دستگاه با موفقیت ثبت شد";
+            _msgSuccess = true;
+            CloseModals();
+            await LoadStations();
+            _unregistered.RemoveAll(u => u.MacAddress == _regForm.MacAddress);
+        }
+        else
+        {
+            _message = err ?? "خطا در ثبت دستگاه";
+            _msgSuccess = false;
+        }
+    }
+
+    private void OpenEditModal(StationDto station)
+    {
+        _editTarget = station;
+        _editForm = new EditForm { Name = station.Name, Description = station.Description, IsEnabled = station.IsEnabled };
+        _showEditModal = true;
+    }
+
+    private async Task SaveEdit()
+    {
+        if (_editTarget == null) return;
+        _saving = true;
+        var ok = await StationService.UpdateAsync(_editTarget.MacAddress, _editForm.Name, _editForm.Description, _editForm.IsEnabled);
+        _saving = false;
+
+        if (ok)
+        {
+            _message = "دستگاه با موفقیت ویرایش شد";
+            _msgSuccess = true;
+            CloseModals();
+            await LoadStations();
+        }
+        else
+        {
+            _message = "خطا در ویرایش دستگاه";
+            _msgSuccess = false;
+        }
+    }
+
+    private async Task DeleteStation(string mac)
+    {
+        var ok = await StationService.DeleteAsync(mac);
+        if (ok)
+        {
+            _message = "دستگاه حذف شد";
+            _msgSuccess = true;
+            await LoadStations();
+        }
+        else
+        {
+            _message = "خطا در حذف دستگاه";
+            _msgSuccess = false;
+        }
+    }
+
+    private void CloseModals()
+    {
+        _showRegModal = false;
+        _showEditModal = false;
+        _editTarget = null;
+    }
+
+    private class RegForm
+    {
+        public string MacAddress { get; set; } = "";
+        public string Name { get; set; } = "";
+        public string? Description { get; set; }
+    }
+
+    private class EditForm
+    {
+        public string Name { get; set; } = "";
+        public string? Description { get; set; }
+        public bool IsEnabled { get; set; } = true;
+    }
+}
+
+<style>
+    .page { direction: rtl; }
+    .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+    .page-header h1 { font-size: 24px; font-weight: 700; color: #1a1a2e; }
+
+    .alert { padding: 12px 18px; border-radius: 10px; margin-bottom: 16px; font-size: 14px; font-weight: 500; }
+    .alert-success { background: #d4edda; color: #1a7a3c; border: 1px solid #a8ddb8; }
+    .alert-error { background: #fdecea; color: #c00; border: 1px solid #f8bbbb; }
+
+    .section { margin-bottom: 32px; }
+    .section-title { font-size: 16px; font-weight: 600; color: #0f3460; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 2px solid #e8f0fe; }
+
+    .data-table { width: 100%; border-collapse: collapse; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,0.07); font-size: 14px; }
+    .data-table th { background: #f0f4ff; padding: 12px 16px; text-align: right; font-weight: 600; color: #333; border-bottom: 2px solid #e0e8ff; }
+    .data-table td { padding: 12px 16px; border-bottom: 1px solid #f5f5f5; vertical-align: middle; }
+    .data-table tr:hover td { background: #fafbff; }
+    .data-table tr:last-child td { border-bottom: none; }
+    .row-disabled td { opacity: 0.55; }
+
+    .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+    .badge-green { background: #d4edda; color: #1a7a3c; }
+    .badge-blue { background: #dbeafe; color: #1e40af; }
+    .badge-gray { background: #f0f0f0; color: #666; }
+
+    .empty-state { padding: 32px; text-align: center; color: #888; font-size: 14px; background: #f9fafb; border-radius: 10px; }
+
+    .actions { display: flex; gap: 6px; }
+    .btn-icon { background: #f0f0f0; border: none; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 14px; transition: all 0.15s; }
+    .btn-icon:hover { background: #e0e0e0; }
+    .btn-del { background: #fdecea; }
+    .btn-del:hover { background: #f8bbbb; }
+
+    .btn-primary { background: #0f3460; color: white; padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; }
+    .btn-primary:disabled { opacity: 0.7; cursor: not-allowed; }
+    .btn-secondary { background: #f0f0f0; color: #333; padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
+    .btn-sm { padding: 6px 14px; font-size: 13px; }
+
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; backdrop-filter: blur(2px); }
+    .modal { background: white; border-radius: 16px; width: 460px; max-width: 95vw; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+    .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 20px 24px; border-bottom: 1px solid #eee; }
+    .modal-header h3 { font-size: 18px; font-weight: 600; }
+    .modal-close { background: none; border: none; font-size: 18px; cursor: pointer; color: #888; }
+    .modal-body { padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+    .modal-footer { display: flex; gap: 10px; padding: 16px 24px; border-top: 1px solid #eee; }
+    .form-row { display: flex; flex-direction: column; gap: 6px; }
+    .form-row label { font-size: 13px; font-weight: 500; }
+    .form-input { padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px; outline: none; width: 100%; box-sizing: border-box; }
+    .form-input:focus { border-color: #0f3460; }
+    .form-input[readonly] { background: #f5f5f5; color: #666; }
+
+    .toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+    .toggle input { display: none; }
+    .toggle-slider { width: 44px; height: 24px; background: #ccc; border-radius: 12px; position: relative; transition: background 0.2s; }
+    .toggle input:checked + .toggle-slider { background: #27ae60; }
+    .toggle-slider::after { content: ''; position: absolute; width: 18px; height: 18px; background: white; border-radius: 50%; top: 3px; right: 3px; transition: transform 0.2s; }
+    .toggle input:checked + .toggle-slider::after { transform: translateX(-20px); }
+</style>

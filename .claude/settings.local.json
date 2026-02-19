@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(powershell -Command:*)"
+      "Bash(powershell -Command:*)",
+      "Bash(dotnet ef migrations add:*)",
+      "Bash(dotnet build:*)"
     ]
   }
 }

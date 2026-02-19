@@ -321,6 +321,56 @@ public class RoleService : IRoleService
     }
 }
 
+// ── Station Service ───────────────────────────────────────────────────────────
+
+public record StationDto(
+    Guid Id, string MacAddress, string Name, string? Description,
+    bool IsEnabled, DateTime RegisteredAt, DateTime? LastSeen, bool IsConnected);
+
+public record ConnectedStationDto(
+    string MacAddress, bool IsRegistered, string? Name, Guid? StationId);
+
+public interface IStationService
+{
+    Task<List<StationDto>> GetAllAsync();
+    Task<List<ConnectedStationDto>> GetConnectedAsync();
+    Task<(bool Success, string? Error)> RegisterAsync(string macAddress, string name, string? description);
+    Task<bool> UpdateAsync(string mac, string name, string? description, bool isEnabled);
+    Task<bool> DeleteAsync(string mac);
+}
+
+public class StationService : IStationService
+{
+    private readonly HttpClient _http;
+    public StationService(HttpClient http) => _http = http;
+
+    public async Task<List<StationDto>> GetAllAsync() =>
+        await _http.GetFromJsonAsync<List<StationDto>>("api/stations", JsonOptions.CaseInsensitive) ?? new();
+
+    public async Task<List<ConnectedStationDto>> GetConnectedAsync() =>
+        await _http.GetFromJsonAsync<List<ConnectedStationDto>>("api/stations/connected", JsonOptions.CaseInsensitive) ?? new();
+
+    public async Task<(bool Success, string? Error)> RegisterAsync(string macAddress, string name, string? description)
+    {
+        var r = await _http.PostAsJsonAsync("api/stations", new { macAddress, name, description });
+        if (r.IsSuccessStatusCode) return (true, null);
+        var json = await r.Content.ReadFromJsonAsync<JsonElement>();
+        return (false, json.TryGetProperty("message", out var m) ? m.GetString() : "خطا در ثبت دستگاه");
+    }
+
+    public async Task<bool> UpdateAsync(string mac, string name, string? description, bool isEnabled)
+    {
+        var r = await _http.PutAsJsonAsync($"api/stations/{mac}", new { name, description, isEnabled });
+        return r.IsSuccessStatusCode;
+    }
+
+    public async Task<bool> DeleteAsync(string mac)
+    {
+        var r = await _http.DeleteAsync($"api/stations/{mac}");
+        return r.IsSuccessStatusCode;
+    }
+}
+
 // ── Log Service ───────────────────────────────────────────────────────────────
 
 public interface ILogService

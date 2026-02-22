@@ -8,6 +8,7 @@ public interface IDoorRepository
     Task<IEnumerable<Door>> GetAllAsync();
     Task<Door?> GetByIdAsync(Guid id);
     Task<Door?> GetByCodeAsync(int code);
+    Task<Door?> GetByCodeAndStationAsync(int code, string stationMac);
     Task<Door> CreateAsync(Door door);
     Task<Door> UpdateAsync(Door door);
     Task DeleteAsync(Guid id);
@@ -23,6 +24,15 @@ public interface IDoorAccessLogRepository
 public interface IPhysicalPortService
 {
     public void SetPortState(string portAddress , bool high);
+}
+
+public interface IStationRelayService
+{
+    /// <summary>Activate the relay. durationMs=0 means stay on (toggle mode).</summary>
+    Task OpenDoorAsync(string stationMac, string i2cAddress, string pin, int durationMs);
+
+    /// <summary>Deactivate the relay (for toggle-mode outputs).</summary>
+    Task CloseDoorAsync(string stationMac, string i2cAddress, string pin);
 }
 
 public interface IUserDoorPermissionRepository

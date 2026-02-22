@@ -4,14 +4,15 @@
 @attribute [Authorize(Roles = "Admin,DoorManager")]
 @inject IDoorService DoorService
 @inject IUserService UserService
+@inject IStationService StationService
 @inject DoorHubService HubService
 @implements IAsyncDisposable
 
-<PageTitle>مدیریت درها — AccessControll</PageTitle>
+<PageTitle>مدیریت خروجی‌ها — AccessControll</PageTitle>
 
 <div class="page" dir="rtl">
     <div class="page-header">
-        <h1>🚪 مدیریت درها</h1>
+        <h1>⚡ مدیریت خروجی‌ها</h1>
         <AuthorizeView Roles="Admin">
             <Authorized>
                 <button class="btn-primary" @onclick="OpenCreateModal">+ در جدید</button>
@@ -44,6 +45,11 @@
                     @if (!string.IsNullOrEmpty(door.HardwareId))
                     {
                         <p class="door-hw">⚙️ @door.HardwareId</p>
+                    }
+                    @if (!string.IsNullOrEmpty(door.StationMacAddress))
+                    {
+                        <p class="door-hw">📡 @door.StationMacAddress — I2C: @door.I2cAddress pin @door.I2cPin</p>
+                        <p class="door-hw">@(door.IsMomentary ? $"⏱ پالسی ({door.DurationMs} ms)" : "🔁 ماندگار (تا قطع دستی)")</p>
                     }
                 </div>
                 <div class="door-footer">
@@ -106,6 +112,39 @@
                     <label>شناسه سخت‌افزار (اختیاری)</label>
                     <input type="text" @bind="_form.HardwareId" class="form-input" placeholder="DOOR-001" dir="ltr" />
                 </div>
+                <div class="form-row">
+                    <label>ایستگاه (PCF8574T)</label>
+                    <select @bind="_form.StationMacAddress" class="form-input">
+                        <option value="">— بدون ایستگاه —</option>
+                        @foreach (var s in _stations)
+                        {
+                            <option value="@s.MacAddress">@s.Name (@s.MacAddress)</option>
+                        }
+                    </select>
+                </div>
+                <div class="form-row-inline">
+                    <div class="form-row">
+                        <label>آدرس I2C</label>
+                        <input type="text" @bind="_form.I2cAddress" class="form-input" placeholder="0x21" dir="ltr" />
+                    </div>
+                    <div class="form-row">
+                        <label>پین خروجی</label>
+                        <input type="text" @bind="_form.I2cPin" class="form-input" placeholder="0" dir="ltr" />
+                    </div>
+                </div>
+                <div class="form-row">
+                    <label class="check-label" style="gap:12px">
+                        <input type="checkbox" @bind="_form.IsMomentary" style="width:16px;height:16px;accent-color:#0f3460" />
+                        <span>پالسی (بعد از مدت معین قطع شود)</span>
+                    </label>
+                </div>
+                @if (_form.IsMomentary)
+                {
+                    <div class="form-row">
+                        <label>مدت فعال بودن (ms)</label>
+                        <input type="number" @bind="_form.DurationMs" class="form-input" min="100" step="500" dir="ltr" />
+                    </div>
+                }
                 @if (_editingDoor != null)
                 {
                     <div class="form-row">
@@ -237,6 +276,7 @@
 
 @code {
     private List<DoorDto> _doors = new();
+    private List<StationDto> _stations = new();
     private bool _showModal, _saving;
     private string _message = "";
     private bool _messageSuccess = false;
@@ -256,12 +296,13 @@
 
     protected override async Task OnInitializedAsync()
     {
-        await LoadDoors();
+        await Task.WhenAll(LoadDoors(), LoadStations());
         HubService.OnDoorStatusChanged += OnDoorStatusChanged;
         await HubService.StartAsync();
     }
 
     private async Task LoadDoors() => _doors = await DoorService.GetAllAsync();
+    private async Task LoadStations() => _stations = await StationService.GetAllAsync();
 
     private void OnDoorStatusChanged(DoorStatusChanged status)
     {
@@ -290,17 +331,26 @@
     private void OpenEditModal(DoorDto door)
     {
         _editingDoor = door;
-        _form = new DoorFormModel { Name = door.Name, Code = door.Code, Description = door.Description, Location = door.Location, HardwareId = door.HardwareId, IsEnabled = door.IsEnabled };
+        _form = new DoorFormModel
+        {
+            Name = door.Name, Code = door.Code, Description = door.Description,
+            Location = door.Location, HardwareId = door.HardwareId, IsEnabled = door.IsEnabled,
+            StationMacAddress = door.StationMacAddress, I2cAddress = door.I2cAddress,
+            I2cPin = door.I2cPin, DurationMs = door.DurationMs, IsMomentary = door.IsMomentary
+        };
         _showModal = true;
     }
 
     private async Task SaveDoor()
     {
         _saving = true;
+        var mac = string.IsNullOrWhiteSpace(_form.StationMacAddress) ? null : _form.StationMacAddress;
         if (_editingDoor == null)
-            await DoorService.CreateAsync(_form.Name, _form.Code, _form.Description, _form.Location, _form.HardwareId);
+            await DoorService.CreateAsync(_form.Name, _form.Code, _form.Description, _form.Location, _form.HardwareId,
+                mac, _form.I2cAddress, _form.I2cPin, _form.DurationMs, _form.IsMomentary);
         else
-            await DoorService.UpdateAsync(_editingDoor.Id, _form.Name, _form.Code, _form.Description, _form.Location, _form.IsEnabled, _form.HardwareId);
+            await DoorService.UpdateAsync(_editingDoor.Id, _form.Name, _form.Code, _form.Description, _form.Location, _form.IsEnabled,
+                _form.HardwareId, mac, _form.I2cAddress, _form.I2cPin, _form.DurationMs, _form.IsMomentary);
         CloseModal();
         await LoadDoors();
         _saving = false;
@@ -375,6 +425,11 @@
         public string Location { get; set; } = "";
         public string? HardwareId { get; set; }
         public bool IsEnabled { get; set; } = true;
+        public string? StationMacAddress { get; set; }
+        public string I2cAddress { get; set; } = "0x21";
+        public string I2cPin { get; set; } = "0";
+        public int DurationMs { get; set; } = 5000;
+        public bool IsMomentary { get; set; } = true;
     }
 
     private class GrantForm
@@ -448,6 +503,9 @@
     .form-row label { font-size: 13px; font-weight: 500; }
     .form-input { padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px; outline: none; width: 100%; box-sizing: border-box; }
     .form-input:focus { border-color: #0f3460; }
+
+    .form-row-inline { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+    .form-hint { font-size: 11px; color: #0f3460; font-family: monospace; padding-top: 2px; }
 
     .toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; }
     .toggle input { display: none; }

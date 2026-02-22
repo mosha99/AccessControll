@@ -2,16 +2,23 @@
 @using AccessControll.Blazor.Services
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Roles = "Admin")]
+@implements IAsyncDisposable
 @inject IStationService StationService
+@inject DoorHubService HubService
 
 <PageTitle>مدیریت ایستگاه‌ها — AccessControll</PageTitle>
 
 <div class="page" dir="rtl">
     <div class="page-header">
         <h1>🖥️ مدیریت ایستگاه‌ها</h1>
-        <button class="btn-primary" @onclick="ScanNetwork" disabled="@_scanning">
-            @(_scanning ? "⏳ در حال جستجو..." : "🔍 جستجوی دستگاه‌ها")
-        </button>
+        <div style="display:flex;gap:10px;">
+            <button class="btn-secondary" @onclick="OpenProvModal" disabled="@_provisioning">
+                @(_provisioning ? "⏳ در حال پروویژن..." : "🔌 پروویژن دستگاه جدید (UART)")
+            </button>
+            <button class="btn-primary" @onclick="ScanNetwork" disabled="@_scanning">
+                @(_scanning ? "⏳ در حال اسکن شبکه..." : "🔍 جستجوی دستگاه‌ها در شبکه")
+            </button>
+        </div>
     </div>
 
     @if (!string.IsNullOrEmpty(_message))
@@ -19,27 +26,27 @@
         <div class="alert @(_msgSuccess ? "alert-success" : "alert-error")">@_message</div>
     }
 
-    <!-- ── Connected but unregistered ─────────────────────────────────────── -->
-    @if (_unregistered.Count > 0)
+    <!-- ── Discovered but unregistered ────────────────────────────────────── -->
+    @if (_discovered.Count > 0)
     {
         <div class="section">
-            <h2 class="section-title">📡 دستگاه‌های متصل (ثبت نشده)</h2>
+            <h2 class="section-title">📡 دستگاه‌های یافت شده (ثبت نشده)</h2>
             <table class="data-table">
                 <thead>
                     <tr>
+                        <th>آدرس IP</th>
                         <th>مک آدرس</th>
-                        <th>وضعیت</th>
                         <th>عملیات</th>
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var s in _unregistered)
+                    @foreach (var s in _discovered)
                     {
                         <tr>
-                            <td dir="ltr">@s.MacAddress</td>
-                            <td><span class="badge badge-green">متصل</span></td>
+                            <td dir="ltr">@s.Ip</td>
+                            <td dir="ltr">@s.Mac</td>
                             <td>
-                                <button class="btn-sm btn-primary" @onclick="@(() => OpenRegisterModal(s.MacAddress))">
+                                <button class="btn-sm btn-primary" @onclick="@(() => OpenRegisterModal(s.Mac, s.Ip))">
                                     + ثبت دستگاه
                                 </button>
                             </td>
@@ -65,8 +72,9 @@
                     <tr>
                         <th>نام</th>
                         <th>مک آدرس</th>
+                        <th>آخرین IP</th>
                         <th>توضیحات</th>
-                        <th>وضعیت اتصال</th>
+                        <th>اتصال</th>
                         <th>وضعیت</th>
                         <th>آخرین اتصال</th>
                         <th>عملیات</th>
@@ -78,6 +86,7 @@
                         <tr class="@(!s.IsEnabled ? "row-disabled" : "")">
                             <td><strong>@s.Name</strong></td>
                             <td dir="ltr">@s.MacAddress</td>
+                            <td dir="ltr">@(s.LastKnownIp ?? "—")</td>
                             <td>@(s.Description ?? "—")</td>
                             <td>
                                 <span class="badge @(s.IsConnected ? "badge-green" : "badge-gray")">
@@ -91,6 +100,10 @@
                             </td>
                             <td>@(s.LastSeen.HasValue ? s.LastSeen.Value.ToLocalTime().ToString("yy/MM/dd HH:mm") : "—")</td>
                             <td class="actions">
+                                @if (!s.IsConnected && !string.IsNullOrEmpty(s.LastKnownIp))
+                                {
+                                    <button class="btn-icon" @onclick="@(() => ConnectStation(s.MacAddress))" title="اتصال مجدد">🔗</button>
+                                }
                                 <button class="btn-icon" @onclick="@(() => OpenEditModal(s))" title="ویرایش">✏️</button>
                                 <button class="btn-icon btn-del" @onclick="@(() => DeleteStation(s.MacAddress))" title="حذف">🗑️</button>
                             </td>
@@ -101,6 +114,100 @@
         }
     </div>
 </div>
+
+<!-- Provision Modal -->
+@if (_showProvModal)
+{
+    <div class="modal-overlay" @onclick="CloseModals">
+        <div class="modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h3>پروویژن دستگاه جدید از طریق UART</h3>
+                <button class="modal-close" @onclick="CloseModals">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="prov-hint">
+                    دستگاه ESP8266 را از طریق USB-to-TTL (ویندوز) یا GPIO UART (OrangePi) وصل کنید، سپس پورت و اطلاعات WiFi را وارد کنید.
+                </div>
+
+                <div class="form-row">
+                    <label>پورت سریال</label>
+                    <input type="text" @bind="_provForm.PortName" class="form-input" dir="ltr"
+                           list="port-suggestions" placeholder="مثلاً COM3 یا /dev/ttyUSB0" />
+                    <datalist id="port-suggestions">
+                        @foreach (var port in _provPorts)
+                        {
+                            <option value="@port" />
+                        }
+                    </datalist>
+                    @if (_provPorts.Length == 0)
+                    {
+                        <div class="prov-warn">پورتی شناسایی نشد — دستی وارد کنید.</div>
+                    }
+                </div>
+
+                <div class="form-row">
+                    <label>WiFi SSID</label>
+                    <input type="text" @bind="_provForm.Ssid" class="form-input" dir="ltr" placeholder="نام شبکه WiFi" />
+                </div>
+
+                <div class="form-row">
+                    <label>WiFi Password</label>
+                    <input type="@(_showProvPass ? "text" : "password")" @bind="_provForm.Password" class="form-input" dir="ltr" placeholder="رمز WiFi" />
+                    <button class="btn-toggle-pass" @onclick="@(() => _showProvPass = !_showProvPass)">
+                        @(_showProvPass ? "پنهان" : "نمایش")
+                    </button>
+                </div>
+
+                <div class="form-row">
+                    <label>نام دستگاه</label>
+                    <input type="text" @bind="_provForm.Name" class="form-input" placeholder="مثلاً: ایستگاه ورودی اصلی" />
+                </div>
+
+                <div class="form-row">
+                    <label>توضیحات (اختیاری)</label>
+                    <input type="text" @bind="_provForm.Description" class="form-input" placeholder="توضیحات" />
+                </div>
+
+                <div class="form-row form-row-check">
+                    <label class="check-label">
+                        <input type="checkbox" @bind="_provForm.FlashFirst" />
+                        <span>فلش firmware قبل از پروویژن (نیاز به arduino-cli)</span>
+                    </label>
+                    <div class="prov-hint">
+                        اگر این گزینه فعال باشد، کد C++ به‌صورت خودکار کامپایل و روی ESP آپلود می‌شود.
+                        در صورت نبود arduino-cli پیام خطا نمایش داده خواهد شد.
+                    </div>
+                </div>
+
+                @if (!string.IsNullOrEmpty(_provResult))
+                {
+                    <div class="alert @(_provSuccess ? "alert-success" : "alert-error")">@_provResult</div>
+                }
+
+                @if (_liveFlashLines.Count > 0 || !string.IsNullOrEmpty(_flashOutput))
+                {
+                    <details class="flash-log" open="@(_provisioning)">
+                        <summary>خروجی arduino-cli @(_provisioning ? "(در حال دریافت...)" : "")</summary>
+                        <pre id="flash-pre">@(string.Join("\n", _liveFlashLines))</pre>
+                    </details>
+                }
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" @onclick="CloseModals">انصراف</button>
+                <button class="btn-primary" @onclick="SaveProvision" disabled="@(_provisioning || string.IsNullOrEmpty(_provForm.PortName))">
+                    @if (_provisioning)
+                    {
+                        @(_provForm.FlashFirst ? "⏳ در حال فلش و پروویژن..." : "⏳ در حال پروویژن...")
+                    }
+                    else
+                    {
+                        @(_provForm.FlashFirst ? "فلش + پروویژن + ریبوت" : "پروویژن و ریبوت")
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
 
 <!-- Register Modal -->
 @if (_showRegModal)
@@ -115,6 +222,10 @@
                 <div class="form-row">
                     <label>مک آدرس</label>
                     <input type="text" value="@_regForm.MacAddress" class="form-input" dir="ltr" readonly />
+                </div>
+                <div class="form-row">
+                    <label>آدرس IP</label>
+                    <input type="text" value="@_regForm.Ip" class="form-input" dir="ltr" readonly />
                 </div>
                 <div class="form-row">
                     <label>نام دستگاه</label>
@@ -178,11 +289,23 @@
 
 @code {
     private List<StationDto> _stations = new();
-    private List<ConnectedStationDto> _unregistered = new();
+    private List<DiscoveredStationDto> _discovered = new();
     private bool _scanning;
     private bool _saving;
     private string _message = "";
     private bool _msgSuccess;
+
+    // Provision modal
+    private bool _showProvModal;
+    private bool _provisioning;
+    private bool _showProvPass;
+    private string[] _provPorts = Array.Empty<string>();
+    private ProvForm _provForm = new();
+    private string _provResult = "";
+    private bool _provSuccess;
+    private string? _flashOutput;
+    private List<string> _liveFlashLines = new();
+    private string? _provSessionId;
 
     // Register modal
     private bool _showRegModal;
@@ -196,6 +319,26 @@
     protected override async Task OnInitializedAsync()
     {
         await LoadStations();
+
+        await HubService.StartAsync();
+        HubService.OnStationStatusChanged += OnStationStatusChanged;
+    }
+
+    private void OnStationStatusChanged(string mac, bool isConnected)
+    {
+        var idx = _stations.FindIndex(s =>
+            s.MacAddress.Equals(mac, StringComparison.OrdinalIgnoreCase));
+        if (idx >= 0)
+        {
+            _stations[idx] = _stations[idx] with { IsConnected = isConnected };
+            InvokeAsync(StateHasChanged);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        HubService.OnStationStatusChanged -= OnStationStatusChanged;
+        await Task.CompletedTask;
     }
 
     private async Task LoadStations()
@@ -206,28 +349,120 @@
     private async Task ScanNetwork()
     {
         _scanning = true;
+        _discovered = new();
         StateHasChanged();
 
-        var connected = await StationService.GetConnectedAsync();
-        var registeredMacs = _stations.Select(s => s.MacAddress).ToHashSet();
-        _unregistered = connected.Where(c => !c.IsRegistered).ToList();
+        var all = await StationService.ScanNetworkAsync();
+        _discovered = all.Where(d => !d.IsRegistered).ToList();
 
-        // Refresh registered list too (update IsConnected flags)
         await LoadStations();
 
         _scanning = false;
-        _message = $"جستجو انجام شد: {connected.Count} دستگاه متصل پیدا شد";
+        _message = $"اسکن انجام شد: {all.Count} دستگاه یافت شد، {_discovered.Count} دستگاه ثبت نشده";
         _msgSuccess = true;
         StateHasChanged();
 
-        await Task.Delay(4000);
+        await Task.Delay(5000);
         _message = "";
         StateHasChanged();
     }
 
-    private void OpenRegisterModal(string mac)
+    private async Task ConnectStation(string mac)
     {
-        _regForm = new RegForm { MacAddress = mac };
+        var ok = await StationService.ConnectAsync(mac);
+        _message = ok ? "دستور اتصال ارسال شد" : "دستگاه پاسخ نداد";
+        _msgSuccess = ok;
+        StateHasChanged();
+        await Task.Delay(3000);
+        _message = "";
+        await LoadStations();
+        StateHasChanged();
+    }
+
+    private async Task OpenProvModal()
+    {
+        _provForm = new ProvForm();
+        _provResult = "";
+        _flashOutput = null;
+        _liveFlashLines = new();
+        _provSessionId = null;
+        _showProvModal = true;
+
+        await HubService.StartAsync();
+
+        _provPorts = await StationService.GetSerialPortsAsync();
+        if (_provPorts.Length == 1)
+            _provForm.PortName = _provPorts[0];
+        StateHasChanged();
+    }
+
+    private async Task SaveProvision()
+    {
+        if (string.IsNullOrWhiteSpace(_provForm.Ssid))
+        {
+            _provResult = "SSID را وارد کنید";
+            _provSuccess = false;
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_provForm.Name))
+        {
+            _provResult = "نام دستگاه را وارد کنید";
+            _provSuccess = false;
+            return;
+        }
+
+        _provisioning = true;
+        _provResult = "";
+        _flashOutput = null;
+        _liveFlashLines = new();
+        StateHasChanged();
+
+        // Subscribe to live flash log lines before starting
+        _provSessionId = Guid.NewGuid().ToString("N");
+        HubService.OnFlashLog += AppendFlashLine;
+        await HubService.JoinProvisionSessionAsync(_provSessionId);
+
+        var (ok, mac, alreadyReg, err, flashOut) = await StationService.ProvisionAsync(
+            _provForm.PortName, _provForm.Ssid, _provForm.Password,
+            _provForm.Name, _provForm.Description, _provForm.FlashFirst, _provSessionId);
+
+        // Cleanup SignalR subscription
+        HubService.OnFlashLog -= AppendFlashLine;
+        await HubService.LeaveProvisionSessionAsync(_provSessionId);
+        _provSessionId = null;
+
+        _provisioning = false;
+        _flashOutput = flashOut;
+
+        if (ok)
+        {
+            _provResult = alreadyReg
+                ? $"پروویژن موفق — MAC: {mac} — دستگاه قبلاً ثبت شده بود، در حال ریبوت است"
+                : $"پروویژن و ثبت موفق — MAC: {mac} — دستگاه در حال ریبوت است";
+            _provSuccess = true;
+            StateHasChanged();
+            await Task.Delay(3000);
+            CloseModals();
+            await LoadStations();
+            StateHasChanged();
+        }
+        else
+        {
+            _provResult = err ?? "خطا در پروویژن";
+            _provSuccess = false;
+            StateHasChanged();
+        }
+    }
+
+    private void AppendFlashLine(string line)
+    {
+        _liveFlashLines.Add(line);
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void OpenRegisterModal(string mac, string ip)
+    {
+        _regForm = new RegForm { MacAddress = mac, Ip = ip };
         _showRegModal = true;
     }
 
@@ -241,16 +476,16 @@
         }
 
         _saving = true;
-        var (ok, err) = await StationService.RegisterAsync(_regForm.MacAddress, _regForm.Name, _regForm.Description);
+        var (ok, err) = await StationService.RegisterAsync(_regForm.MacAddress, _regForm.Name, _regForm.Description, _regForm.Ip);
         _saving = false;
 
         if (ok)
         {
-            _message = "دستگاه با موفقیت ثبت شد";
+            _message = "دستگاه ثبت شد و دستور اتصال ارسال شد";
             _msgSuccess = true;
             CloseModals();
             await LoadStations();
-            _unregistered.RemoveAll(u => u.MacAddress == _regForm.MacAddress);
+            _discovered.RemoveAll(u => u.Mac == _regForm.MacAddress);
         }
         else
         {
@@ -305,14 +540,26 @@
 
     private void CloseModals()
     {
-        _showRegModal = false;
+        _showProvModal = false;
+        _showRegModal  = false;
         _showEditModal = false;
-        _editTarget = null;
+        _editTarget    = null;
+    }
+
+    private class ProvForm
+    {
+        public string PortName { get; set; } = "";
+        public string Ssid { get; set; } = "";
+        public string Password { get; set; } = "";
+        public string Name { get; set; } = "";
+        public string? Description { get; set; }
+        public bool FlashFirst { get; set; } = true;
     }
 
     private class RegForm
     {
         public string MacAddress { get; set; } = "";
+        public string Ip { get; set; } = "";
         public string Name { get; set; } = "";
         public string? Description { get; set; }
     }
@@ -374,6 +621,18 @@
     .form-input { padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px; outline: none; width: 100%; box-sizing: border-box; }
     .form-input:focus { border-color: #0f3460; }
     .form-input[readonly] { background: #f5f5f5; color: #666; }
+
+    .prov-hint { background: #f0f4ff; border: 1px solid #c7d7ff; border-radius: 8px; padding: 10px 14px; font-size: 13px; color: #2244aa; line-height: 1.6; }
+    .prov-warn { color: #c00; font-size: 13px; padding: 6px 0; }
+    .btn-toggle-pass { background: none; border: none; color: #0f3460; font-size: 12px; cursor: pointer; padding: 0; text-decoration: underline; align-self: flex-start; }
+
+    .form-row-check { flex-direction: column; gap: 8px; }
+    .check-label { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+    .check-label input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; accent-color: #0f3460; }
+
+    .flash-log { margin-top: 4px; border: 1px solid #dde; border-radius: 8px; overflow: hidden; }
+    .flash-log summary { padding: 8px 14px; background: #f5f5f5; cursor: pointer; font-size: 13px; font-weight: 500; }
+    .flash-log pre { margin: 0; padding: 12px 14px; font-size: 12px; background: #1e1e2e; color: #cdd6f4; overflow-x: auto; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; direction: ltr; text-align: left; }
 
     .toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; }
     .toggle input { display: none; }

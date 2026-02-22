@@ -20,6 +20,8 @@ public class DoorHubService : IAsyncDisposable
 
     public event Action<DoorStatusChanged>? OnDoorStatusChanged;
     public event Action<object>? OnDoorUpdated;
+    public event Action<string>? OnFlashLog;
+    public event Action<string, bool>? OnStationStatusChanged;
 
     public DoorHubService(HttpClient http, AuthenticationStateProvider authState)
     {
@@ -57,6 +59,12 @@ public class DoorHubService : IAsyncDisposable
 
         _connection.On<object>("DoorUpdated", door =>
             OnDoorUpdated?.Invoke(door));
+
+        _connection.On<string>("FlashLog", line =>
+            OnFlashLog?.Invoke(line));
+
+        _connection.On<string, bool>("StationStatusChanged", (mac, isConnected) =>
+            OnStationStatusChanged?.Invoke(mac, isConnected));
         Console.WriteLine("-------------3-------------");
 
         try
@@ -80,6 +88,18 @@ public class DoorHubService : IAsyncDisposable
     }
 
     public bool IsConnected => _connection?.State == HubConnectionState.Connected;
+
+    public async Task JoinProvisionSessionAsync(string sessionId)
+    {
+        if (_connection?.State == HubConnectionState.Connected)
+            await _connection.InvokeAsync("JoinProvisionSession", sessionId);
+    }
+
+    public async Task LeaveProvisionSessionAsync(string sessionId)
+    {
+        if (_connection?.State == HubConnectionState.Connected)
+            await _connection.InvokeAsync("LeaveProvisionSession", sessionId);
+    }
 
     public async ValueTask DisposeAsync()
     {

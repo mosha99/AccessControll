@@ -73,6 +73,7 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
             e.HasKey(s => s.Id);
             e.Property(s => s.MacAddress).HasMaxLength(17).IsRequired();
             e.Property(s => s.Name).HasMaxLength(200).IsRequired();
+            e.Property(s => s.LastKnownIp).HasMaxLength(50).IsRequired(false);
             e.HasIndex(s => s.MacAddress).IsUnique();
         });
 

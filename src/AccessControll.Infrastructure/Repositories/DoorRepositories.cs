@@ -18,7 +18,13 @@ public class DoorRepository : IDoorRepository
         => await _context.Doors.FindAsync(id);
 
     public async Task<Door?> GetByCodeAsync(int code)
-        => await _context.Doors.FirstOrDefaultAsync(x=>x.Code == code);
+        => await _context.Doors.FirstOrDefaultAsync(x => x.Code == code);
+
+    public async Task<Door?> GetByCodeAndStationAsync(int code, string stationMac)
+        => await _context.Doors.FirstOrDefaultAsync(x =>
+            x.Code == code &&
+            x.StationMacAddress != null &&
+            x.StationMacAddress.ToUpper() == stationMac.ToUpper());
 
     public async Task<Door> CreateAsync(Door door)
     {

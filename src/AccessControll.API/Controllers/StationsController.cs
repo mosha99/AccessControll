@@ -1,8 +1,10 @@
+using AccessControll.API.Hubs;
 using AccessControll.Domain.Entities;
 using AccessControll.Hardware;
 using AccessControll.Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 
 namespace AccessControll.API.Controllers;
@@ -14,11 +16,43 @@ public class StationsController : ControllerBase
 {
     private readonly ApplicationDbContext _db;
     private readonly StationConnectionManager _connectionManager;
+    private readonly ProvisioningService _provisioning;
+    private readonly IHubContext<DoorHub> _doorHub;
+    private readonly ServerKeyService _keyService;
 
-    public StationsController(ApplicationDbContext db, StationConnectionManager connectionManager)
+    public StationsController(
+        ApplicationDbContext db,
+        StationConnectionManager connectionManager,
+        ProvisioningService provisioning,
+        IHubContext<DoorHub> doorHub,
+        ServerKeyService keyService)
     {
-        _db = db;
+        _db                = db;
         _connectionManager = connectionManager;
+        _provisioning      = provisioning;
+        _doorHub           = doorHub;
+        _keyService        = keyService;
+    }
+
+    /// <summary>
+    /// Returns the server's P-256 public key and a live sign+verify round-trip result.
+    /// Use the fingerprint to confirm a provisioned station received the correct key.
+    /// </summary>
+    [HttpGet("server-key")]
+    public IActionResult GetServerKey()
+    {
+        // Live round-trip: sign a random nonce and verify it — confirms the key service works
+        var nonce = System.Security.Cryptography.RandomNumberGenerator.GetBytes(8);
+        var sig   = _keyService.Sign(nonce);
+        var ok    = _keyService.Verify(nonce, sig);
+
+        return Ok(new
+        {
+            pubkeyHex   = _keyService.PublicKeyHex,          // 128 chars — sent to ESP during provisioning
+            fingerprint = _keyService.Fingerprint,            // SHA-256 of public key
+            selfTest    = ok ? "PASS" : "FAIL",               // live sign+verify round-trip
+            keyFile     = "server.p256key",
+        });
     }
 
     /// <summary>Returns all registered stations with their live connection status.</summary>
@@ -35,34 +69,92 @@ public class StationsController : ControllerBase
             s.IsEnabled,
             s.RegisteredAt,
             s.LastSeen,
+            s.LastKnownIp,
             IsConnected = _connectionManager.IsConnected(s.MacAddress)
         }));
     }
 
-    /// <summary>Returns all currently connected station MACs (registered or not).</summary>
-    [HttpGet("connected")]
-    public async Task<IActionResult> GetConnected()
+    /// <summary>Returns the list of serial ports available on the server OS.</summary>
+    [HttpGet("serial-ports")]
+    public IActionResult GetSerialPorts()
     {
-        var macs = _connectionManager.GetConnectedMacs();
-
-        var registered = await _db.Stations
-            .Where(s => macs.Contains(s.MacAddress))
-            .ToListAsync();
-
-        var registeredByMac = registered.ToDictionary(s => s.MacAddress);
-
-        var result = macs.Select(mac => new
-        {
-            MacAddress = mac,
-            IsRegistered = registeredByMac.ContainsKey(mac),
-            Name = registeredByMac.TryGetValue(mac, out var s) ? s.Name : null,
-            StationId = registeredByMac.TryGetValue(mac, out var s2) ? s2.Id : (Guid?)null
-        });
-
-        return Ok(result);
+        return Ok(ProvisioningService.GetAvailablePorts());
     }
 
-    /// <summary>Register a discovered station by MAC address.</summary>
+    /// <summary>
+    /// Provisions an ESP8266:
+    ///   - FlashFirst=true : flash via arduino-cli → extract MAC from esptool output →
+    ///                       send WiFi creds one-way (no roundtrip wait) → register in DB.
+    ///   - FlashFirst=false: legacy roundtrip — send PROVISION command, wait for OK:{mac}.
+    /// </summary>
+    [HttpPost("provision")]
+    public async Task<IActionResult> Provision([FromBody] ProvisionRequest req)
+    {
+        string? flashOutput = null;
+        string mac;
+
+        if (req.FlashFirst)
+        {
+            // ── Step 1: Bake WiFi creds + server pubkey into config.h ─────────────
+            // The sketch reads config.h on first boot and writes to EEPROM.
+            // No UART roundtrip needed — credentials travel inside the firmware.
+            try { _provisioning.WriteConfigHeader(req.Ssid, req.Password); }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = $"خطا در نوشتن config.h: {ex.Message}", flashOutput });
+            }
+
+            // ── Step 2: Compile + flash (arduino-cli picks up the new config.h) ──
+            Action<string>? onLine = null;
+            if (!string.IsNullOrEmpty(req.SessionId))
+            {
+                var group = $"prov-{req.SessionId}";
+                onLine = line => _ = _doorHub.Clients.Group(group).SendAsync("FlashLog", line);
+            }
+
+            var flash = await _provisioning.FlashFirmwareAsync(req.PortName, onLine);
+            flashOutput = flash.Output;
+            if (!flash.Success)
+                return BadRequest(new { message = "خطا در فلش firmware", flashOutput });
+
+            // ── Step 3: Extract MAC from esptool output ───────────────────────────
+            var extractedMac = ProvisioningService.ExtractMacFromOutput(flashOutput);
+            if (extractedMac is null)
+                return BadRequest(new { message = "MAC آدرس در خروجی esptool یافت نشد", flashOutput });
+
+            mac = extractedMac;
+            // No UART send needed — credentials are baked into the firmware.
+        }
+        else
+        {
+            // Legacy UART roundtrip — only works with adapters that have DTR/RTS.
+            var result = await _provisioning.ProvisionAsync(req.PortName, req.Ssid, req.Password);
+            if (!result.Success)
+                return BadRequest(new { message = result.Error, flashOutput });
+
+            mac = result.Mac!.ToUpperInvariant();
+        }
+
+        var alreadyRegistered = await _db.Stations.AnyAsync(s => s.MacAddress == mac);
+
+        if (!alreadyRegistered)
+        {
+            _db.Stations.Add(new Station
+            {
+                Id           = Guid.NewGuid(),
+                MacAddress   = mac,
+                Name         = req.Name,
+                Description  = req.Description,
+                IsEnabled    = true,
+                RegisteredAt = DateTime.UtcNow,
+            });
+            await _db.SaveChangesAsync();
+        }
+
+        return Ok(new { Mac = mac, AlreadyRegistered = alreadyRegistered, FlashOutput = flashOutput });
+    }
+
+    /// <summary>Register a station by MAC address (and optional IP).</summary>
     [HttpPost]
     public async Task<IActionResult> Register([FromBody] RegisterStationRequest req)
     {
@@ -73,16 +165,18 @@ public class StationsController : ControllerBase
 
         var station = new Station
         {
-            Id = Guid.NewGuid(),
-            MacAddress = mac,
-            Name = req.Name,
-            Description = req.Description,
-            IsEnabled = true,
-            RegisteredAt = DateTime.UtcNow
+            Id           = Guid.NewGuid(),
+            MacAddress   = mac,
+            Name         = req.Name,
+            Description  = req.Description,
+            IsEnabled    = true,
+            RegisteredAt = DateTime.UtcNow,
+            LastKnownIp  = req.Ip
         };
 
         _db.Stations.Add(station);
         await _db.SaveChangesAsync();
+
         return Ok(station);
     }
 
@@ -93,9 +187,9 @@ public class StationsController : ControllerBase
         var station = await _db.Stations.FirstOrDefaultAsync(s => s.MacAddress == mac.ToUpperInvariant());
         if (station == null) return NotFound();
 
-        station.Name = req.Name;
+        station.Name        = req.Name;
         station.Description = req.Description;
-        station.IsEnabled = req.IsEnabled;
+        station.IsEnabled   = req.IsEnabled;
         await _db.SaveChangesAsync();
         return Ok(station);
     }
@@ -113,5 +207,6 @@ public class StationsController : ControllerBase
     }
 }
 
-public record RegisterStationRequest(string MacAddress, string Name, string? Description);
+public record RegisterStationRequest(string MacAddress, string Name, string? Description, string? Ip);
 public record UpdateStationRequest(string Name, string? Description, bool IsEnabled);
+public record ProvisionRequest(string PortName, string Ssid, string Password, string Name, string? Description, bool FlashFirst = false, string? SessionId = null);

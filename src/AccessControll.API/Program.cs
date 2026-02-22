@@ -58,7 +58,12 @@ builder.Services.AddCors(opt =>
         .AllowAnyHeader()
         .AllowAnyMethod()));
 
-builder.Services.AddSignalR(options => options.EnableDetailedErrors = true);
+builder.Services.AddSignalR(options =>
+{
+    options.EnableDetailedErrors  = true;
+    options.KeepAliveInterval     = TimeSpan.FromSeconds(10);  // ping هر 10 ثانیه
+    options.ClientTimeoutInterval = TimeSpan.FromSeconds(20);  // اگه 20 ثانیه جواب نداد → disconnect
+});
 
 // ── Hardware services (multi-station) ──────────────────────────────────────
 // Oled: renders display frames (font rendering + optional local I2C)
@@ -77,6 +82,15 @@ builder.Services.AddSingleton<GpioController>(_ =>
     catch { return null!; }
 });
 builder.Services.AddSingleton<IPhysicalPortService, PhysicalPortService>();
+
+// Ed25519 key pair — generated once on first run, persisted to server.ed25519
+builder.Services.AddSingleton<ServerKeyService>();
+
+builder.Services.AddSingleton<ProvisioningService>();
+
+// Station I2C relay — singleton with callback wired after app.Build()
+builder.Services.AddSingleton<StationRelayService>();
+builder.Services.AddSingleton<IStationRelayService>(sp => sp.GetRequiredService<StationRelayService>());
 // ──────────────────────────────────────────────────────────────────────────
 
 var app = builder.Build();
@@ -117,6 +131,7 @@ var oled              = app.Services.GetRequiredService<Oled>();
 var sessionManager    = app.Services.GetRequiredService<StationSessionManager>();
 var connectionManager = app.Services.GetRequiredService<StationConnectionManager>();
 var hubContext        = app.Services.GetRequiredService<IHubContext<HardwareHub>>();
+var keyService        = app.Services.GetRequiredService<ServerKeyService>();
 
 // Init font (tries local I2C; silently skips if unavailable)
 oled.Init();
@@ -126,12 +141,37 @@ oled.Init();
 sessionManager.SetDisplaySender(async (mac, buffer) =>
 {
     var connId = connectionManager.GetConnectionId(mac);
-    Console.WriteLine($"[DISP] SendDisplay mac={mac} connId={connId ?? "NULL"} bufLen={buffer.Length}");
     if (connId is null) return;
     var base64 = Convert.ToBase64String(buffer);
-    Console.WriteLine($"[DISP] Calling SendAsync RenderDisplay to {connId} b64Len={base64.Length}");
     await hubContext.Clients.Client(connId).SendAsync("RenderDisplay", base64);
-    Console.WriteLine($"[DISP] SendAsync completed for {connId}");
+});
+
+// Wire I2C relay pipeline — same callback pattern as display sender.
+// All control messages are P-256 signed with a per-connection seqno to prevent forgery and replay.
+var relayService = app.Services.GetRequiredService<StationRelayService>();
+
+relayService.SetOpenSender(async (mac, i2cAddress, pin, durationMs) =>
+{
+    var connId = connectionManager.GetConnectionId(mac);
+    if (connId is null) return;
+
+    var seqno   = connectionManager.NextSeqno(connId);
+    var sigData = System.Text.Encoding.UTF8.GetBytes($"OpenDoor|{i2cAddress}|{pin}|{durationMs}|{seqno}");
+    var sigHex  = Convert.ToHexString(keyService.Sign(sigData)).ToLowerInvariant();
+
+    await hubContext.Clients.Client(connId).SendAsync("OpenDoor", i2cAddress, pin, durationMs, seqno, sigHex);
+});
+
+relayService.SetCloseSender(async (mac, i2cAddress, pin) =>
+{
+    var connId = connectionManager.GetConnectionId(mac);
+    if (connId is null) return;
+
+    var seqno   = connectionManager.NextSeqno(connId);
+    var sigData = System.Text.Encoding.UTF8.GetBytes($"CloseDoor|{i2cAddress}|{pin}|{seqno}");
+    var sigHex  = Convert.ToHexString(keyService.Sign(sigData)).ToLowerInvariant();
+
+    await hubContext.Clients.Client(connId).SendAsync("CloseDoor", i2cAddress, pin, seqno, sigHex);
 });
 // ──────────────────────────────────────────────────────────────────────────
 

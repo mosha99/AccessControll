@@ -17,6 +17,17 @@ public class DoorHub : Hub
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, $"door-{doorId}");
     }
 
+    /// <summary>کلاینت Blazor قبل از شروع پروویژن این متد را فراخوانی می‌کند تا لاگ زنده دریافت کند.</summary>
+    public async Task JoinProvisionSession(string sessionId)
+    {
+        await Groups.AddToGroupAsync(Context.ConnectionId, $"prov-{sessionId}");
+    }
+
+    public async Task LeaveProvisionSession(string sessionId)
+    {
+        await Groups.RemoveFromGroupAsync(Context.ConnectionId, $"prov-{sessionId}");
+    }
+
     public override async Task OnConnectedAsync()
     {
         await Groups.AddToGroupAsync(Context.ConnectionId, "all-doors");

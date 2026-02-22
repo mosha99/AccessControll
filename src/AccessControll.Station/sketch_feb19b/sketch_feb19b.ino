@@ -7,7 +7,14 @@
 //    2. ArduinoJson      by Benoit Blanchon
 //    3. Adafruit SSD1306
 //    4. Adafruit GFX
+//    5. micro-ecc        by Kenneth MacKay  (P-256 ECDSA verify)
 //  (I2CKeyPad دیگه لازم نیست)
+//
+//  امنیت:
+//    سرور پس از اتصال، یک nonce تصادفی را با کلید خصوصی P-256 خود امضا کرده
+//    و به ESP ارسال می‌کند (AuthChallenge).
+//    ESP امضا را با کلید عمومی ذخیره‌شده در EEPROM تأیید می‌کند؛
+//    تنها در صورت موفقیت، RegisterStation فراخوانی می‌شود.
 // ═══════════════════════════════════════════════════
 
 #include <ESP8266WiFi.h>
@@ -17,19 +24,43 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <EEPROM.h>
+#include <uECC.h>                         // micro-ecc: P-256 verify
+#include <bearssl/bearssl_hash.h>         // BearSSL SHA-256 (bundled with ESP8266 core)
+#include "config.h"  // Build-time provisioning: CFG_WIFI_SSID, CFG_SERVER_HOST, CFG_SERVER_PORT
 
-// ── WiFi ──────────────────────────────────────────
+// ── Forward declarations ───────────────────────────
+void oledShowStatus(String line1, String line2 = "", String line3 = "");
+
+// ── EEPROM Provisioning ───────────────────────────
+// PROV_MAGIC 0xAE: struct with 64-byte P-256 public key (X‖Y).
+// Old devices (0xAC/0xAD) will re-provision automatically on next boot.
+#define PROV_MAGIC   0xAE
+#define EEPROM_SIZE  256
+
+struct __attribute__((packed)) ProvData {
+  uint8_t  magic;        //   1 byte  @ offset   0
+  char     ssid[33];     //  33 bytes @ offset   1
+  char     password[65]; //  65 bytes @ offset  34
+  char     server[65];   //  65 bytes @ offset  99
+  uint16_t port;         //   2 bytes @ offset 164
+  uint8_t  pubkey[64];   //  64 bytes @ offset 166  ← P-256 public key (X‖Y, 32+32)
+  uint8_t  hasPubkey;    //   1 byte  @ offset 230
+};                       // Total: 231 bytes (fits in EEPROM_SIZE=256)
+
+// ── WiFi — hardcoded fallback if not provisioned ──
 const char* WIFI_SSID = "$(M_2.4_M)$";
 const char* WIFI_PASS = "M@ein#1383";
 
-// ── SignalR Server ────────────────────────────────
-const char* WS_HOST = "192.168.254.54";
-const int   WS_PORT = 5000;
+// ── SignalR Server (runtime — set via /connect) ────
+char   g_wsHost[64] = "";
+int    g_wsPort     = 5000;
 const char* WS_PATH = "/hardwareHub";
+bool   g_wsStarted  = false;
 
 // ── I2C Pins (ESP-01) ─────────────────────────────
-#define SDA_PIN 0   // GPIO0
-#define SCL_PIN 2   // GPIO2
+#define SDA_PIN 0
+#define SCL_PIN 2
 
 // ── OLED ──────────────────────────────────────────
 #define SCREEN_WIDTH 128
@@ -39,10 +70,8 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
 // ══════════════════════════════════════════════════
 //  Custom PCF8574 Keypad
-//  R1-R4 → P0-P3 (بیت‌های پایین)
-//  C1-C4 → P4-P7 (بیت‌های بالا)
 // ══════════════════════════════════════════════════
-#define KEYPAD_ADDR 0x20  // A0-A2 همه HIGH → 0x27
+#define KEYPAD_ADDR 0x20
 
 const char KEYMAP[4][4] = {
   {'1','2','3','A'},
@@ -52,13 +81,11 @@ const char KEYMAP[4][4] = {
 };
 
 char getKeyFromPCF8574() {
-  // R1-R4 → P0-P3, C1-C4 → P4-P7
   static char lastKey = 0;
   static unsigned long releaseAt = 0;
 
   for (int row = 0; row < 4; row++) {
     uint8_t writeByte = (~(1 << row) & 0x0F) | 0xF0;
-
     Wire.beginTransmission(KEYPAD_ADDR);
     Wire.write(writeByte);
     Wire.endTransmission();
@@ -74,39 +101,54 @@ char getKeyFromPCF8574() {
         Wire.beginTransmission(KEYPAD_ADDR);
         Wire.write(0xFF);
         Wire.endTransmission();
-
         char key = KEYMAP[row][col];
         releaseAt = 0;
-
-        if (key != lastKey) {
-          lastKey = key;
-          return key;
-        }
+        if (key != lastKey) { lastKey = key; return key; }
         return 0;
       }
     }
   }
 
-  // هیچ کلیدی — بعد از 150ms واقعاً رها شدن، reset کن
   Wire.beginTransmission(KEYPAD_ADDR);
   Wire.write(0xFF);
   Wire.endTransmission();
-
   if (lastKey != 0) {
     if (releaseAt == 0) releaseAt = millis();
-    if (millis() - releaseAt >= 150) {
-      lastKey = 0;
-      releaseAt = 0;
-    }
+    if (millis() - releaseAt >= 150) { lastKey = 0; releaseAt = 0; }
   }
   return 0;
 }
 
 bool initKeypad() {
   Wire.beginTransmission(KEYPAD_ADDR);
-  Wire.write(0xFF); // همه HIGH
-  uint8_t err = Wire.endTransmission();
-  return (err == 0);
+  Wire.write(0xFF);
+  return Wire.endTransmission() == 0;
+}
+
+// ── Relay (PCF8574T, non-blocking) ────────────────
+uint8_t  g_relayAddr  = 0;
+uint32_t g_relayOffAt = 0;   // 0 = no active relay
+
+// ── P-256 auth state ──────────────────────────────
+// Pubkey is loaded from EEPROM in setup() and cached here for event-handler use.
+static uint8_t  g_serverPubKey[64] = {0};
+static bool     g_hasPubKey        = false;
+
+// Per-session monotonic counter — resets on every disconnect.
+// Each signed server message must carry a seqno strictly greater than the last accepted one.
+static uint32_t g_seqnoLast = 0;
+static bool     g_seqnoInit = false;   // false = first message of session, skip >-check
+
+void relayPinOn(uint8_t addr, uint8_t pin) {
+  Wire.beginTransmission(addr);
+  Wire.write(~(1 << pin));   // active-low: pull pin LOW, all others HIGH
+  Wire.endTransmission();
+}
+
+void relayAllOff(uint8_t addr) {
+  Wire.beginTransmission(addr);
+  Wire.write(0xFF);           // all HIGH — all relays off
+  Wire.endTransmission();
 }
 
 // ── WebSocket ─────────────────────────────────────
@@ -120,23 +162,18 @@ String logs = "";
 void logMessage(String msg) {
   Serial.println(msg);
   logs += msg + "<br>\n";
-  if (logs.length() > 8000)
-    logs = logs.substring(4000);
+  if (logs.length() > 3000) logs = logs.substring(1500);
 }
 
 void handleRoot() {
   String html = "<!DOCTYPE html><html><head>"
-    "<meta charset='utf-8'>"
-    "<meta http-equiv='refresh' content='2'>"
-    "<style>"
-    "body{background:#111;color:#0f0;font-family:monospace;padding:15px;}"
+    "<meta charset='utf-8'><meta http-equiv='refresh' content='2'>"
+    "<style>body{background:#111;color:#0f0;font-family:monospace;padding:15px;}"
     "h2{color:#ff0;} a{color:#f80;}"
     ".box{background:#1a1a1a;padding:10px;border:1px solid #333;border-radius:5px;}"
-    "</style></head><body>"
-    "<h2>ESP8266 Log</h2>"
+    "</style></head><body><h2>ESP8266 Log</h2>"
     "<a href='/clear'>Clear</a> | <a href='/'>Refresh</a>"
-    "<hr><div class='box'>" + logs + "</div>"
-    "</body></html>";
+    "<hr><div class='box'>" + logs + "</div></body></html>";
   logServer.send(200, "text/html", html);
 }
 
@@ -146,8 +183,66 @@ void handleClear() {
   logServer.send(302);
 }
 
+// ── Hex helpers ───────────────────────────────────
+
+static uint8_t hexNibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return 0;
+}
+
+static int hexDecode(const char* hex, uint8_t* out, int maxLen) {
+  int len = strlen(hex) / 2;
+  if (len > maxLen) len = maxLen;
+  for (int i = 0; i < len; i++)
+    out[i] = (hexNibble(hex[2*i]) << 4) | hexNibble(hex[2*i+1]);
+  return len;
+}
+
+// ── Crypto Helpers ────────────────────────────────
+
+/// SHA-256 via BearSSL (bundled with ESP8266 Arduino core).
+static void sha256(const uint8_t* data, size_t len, uint8_t* out32) {
+  br_sha256_context ctx;
+  br_sha256_init(&ctx);
+  br_sha256_update(&ctx, data, len);
+  br_sha256_out(&ctx, out32);
+}
+
+/// Verify a P-256 / SHA-256 signature (IEEE P1363 format: r‖s, 64 bytes).
+/// pubkey64: 64-byte raw X‖Y; sig64: 64-byte r‖s; data/dataLen: signed payload.
+static bool verifyP256(const uint8_t* pubkey64, const uint8_t* data, size_t dataLen, const uint8_t* sig64) {
+  uint8_t hash[32];
+  sha256(data, dataLen, hash);
+  return uECC_verify(pubkey64, hash, 32, sig64, uECC_secp256r1()) == 1;
+}
+
+/// Verify a signed server→ESP message and enforce monotonic seqno (anti-replay).
+/// sigData format signed by server: "target|arg1|arg2|...|seqno"
+/// Returns true if signature is valid and seqno is acceptable; updates g_seqnoLast.
+static bool verifyMsg(const char* sigData, uint32_t seqno, const char* sigHex) {
+  if (!g_hasPubKey) {
+    logMessage("ERR: No public key — cannot verify message");
+    return false;
+  }
+  if (g_seqnoInit && seqno <= g_seqnoLast) {
+    logMessage("ERR: Replay/reorder seq=" + String(seqno) + " last=" + String(g_seqnoLast));
+    return false;
+  }
+  uint8_t sig[64];
+  if (hexDecode(sigHex, sig, 64) != 64) { logMessage("ERR: Bad sig hex"); return false; }
+  if (!verifyP256(g_serverPubKey, (const uint8_t*)sigData, strlen(sigData), sig)) {
+    logMessage("ERR: Sig INVALID for: " + String(sigData));
+    return false;
+  }
+  g_seqnoLast = seqno;
+  g_seqnoInit = true;
+  return true;
+}
+
 // ── OLED Helpers ──────────────────────────────────
-void oledShowStatus(String line1, String line2 = "", String line3 = "") {
+void oledShowStatus(String line1, String line2, String line3) {
   display.clearDisplay();
   display.setTextColor(WHITE);
   display.setTextSize(1);
@@ -159,8 +254,6 @@ void oledShowStatus(String line1, String line2 = "", String line3 = "") {
 }
 
 void oledRenderBuffer(uint8_t* buf) {
-  // Copy into Adafruit's own buffer, then let display.display() send it.
-  // Direct I2C writes conflict with Adafruit's hardware state after init.
   memcpy(display.getBuffer(), buf, 1024);
   display.display();
 }
@@ -183,6 +276,60 @@ int b64Decode(const char* in, uint8_t* out, int maxOut) {
   return n;
 }
 
+// ── UART Provisioning ─────────────────────────────
+// Expects: PROVISION:{"ssid":"...","password":"...","server":"...","port":N,"pubkey":"128hexchars"}
+void handleProvision(String json) {
+  StaticJsonDocument<512> doc;
+  if (deserializeJson(doc, json) != DeserializationError::Ok) {
+    Serial.println("ERR:invalid JSON");
+    return;
+  }
+
+  const char* ssid      = doc["ssid"]     | "";
+  const char* password  = doc["password"] | "";
+  const char* server    = doc["server"]   | "";
+  int         port      = doc["port"]     | 5000;
+  const char* pubkeyHex = doc["pubkey"]   | "";
+
+  if (strlen(ssid) == 0) { Serial.println("ERR:missing ssid"); return; }
+
+  ProvData pdata;
+  pdata.magic = PROV_MAGIC;
+  strncpy(pdata.ssid,     ssid,     sizeof(pdata.ssid)     - 1); pdata.ssid[sizeof(pdata.ssid)-1]         = '\0';
+  strncpy(pdata.password, password, sizeof(pdata.password) - 1); pdata.password[sizeof(pdata.password)-1] = '\0';
+  strncpy(pdata.server,   server,   sizeof(pdata.server)   - 1); pdata.server[sizeof(pdata.server)-1]     = '\0';
+  pdata.port = (uint16_t)port;
+
+  // Store server P-256 public key if provided (128 hex chars = 64 bytes X‖Y)
+  if (strlen(pubkeyHex) == 128) {
+    hexDecode(pubkeyHex, pdata.pubkey, 64);
+    pdata.hasPubkey = 1;
+    logMessage("OK: Server P-256 public key stored (" + String(pubkeyHex).substring(0, 8) + "...)");
+  } else {
+    memset(pdata.pubkey, 0, 64);
+    pdata.hasPubkey = 0;
+    logMessage("WARN: No public key in PROVISION payload — /connect will not be verified");
+  }
+
+  EEPROM.put(0, pdata);
+  EEPROM.commit();
+
+  String mac = WiFi.macAddress();
+  Serial.println("OK:{\"mac\":\"" + mac + "\"}");
+
+  logMessage("Provisioned — rebooting in 3s...");
+  oledShowStatus("Provisioned!", "Rebooting...");
+  delay(3000);
+  ESP.restart();
+}
+
+void checkProvisionSerial() {
+  if (!Serial.available()) return;
+  String line = Serial.readStringUntil('\n');
+  line.trim();
+  if (line.startsWith("PROVISION:")) handleProvision(line.substring(10));
+}
+
 // ── SignalR ───────────────────────────────────────
 void signalRHandshake() {
   String msg = "{\"protocol\":\"json\",\"version\":1}";
@@ -191,16 +338,13 @@ void signalRHandshake() {
   logMessage("SignalR: Handshake sent");
 }
 
-// Called once after handshake ACK (type 6) — identifies this device by MAC address
 void registerStation() {
-  String mac = WiFi.macAddress(); // e.g. "AA:BB:CC:DD:EE:FF"
+  String mac = WiFi.macAddress();
   StaticJsonDocument<200> doc;
   doc["type"]   = 1;
   doc["target"] = "RegisterStation";
   doc.createNestedArray("arguments").add(mac);
-  String msg;
-  serializeJson(doc, msg);
-  msg += (char)0x1E;
+  String msg; serializeJson(doc, msg); msg += (char)0x1E;
   ws.sendTXT(msg);
   logMessage(">> RegisterStation: " + mac);
 }
@@ -210,15 +354,12 @@ void sendKey(char key) {
   doc["type"]   = 1;
   doc["target"] = "SendKey";
   doc.createNestedArray("arguments").add(String(key));
-  String msg;
-  serializeJson(doc, msg);
-  msg += (char)0x1E;
+  String msg; serializeJson(doc, msg); msg += (char)0x1E;
   ws.sendTXT(msg);
   logMessage(">> Key sent: " + String(key));
 }
 
 void handleServerMessage(uint8_t* payload, size_t length) {
-  logMessage("WS RX len=" + String(length) + " [" + String((char*)payload).substring(0, 60) + "]");
   String raw = String((char*)payload);
   int start = 0;
   while (start < (int)raw.length()) {
@@ -228,134 +369,138 @@ void handleServerMessage(uint8_t* payload, size_t length) {
     start = end + 1;
     if (chunk.length() < 2) continue;
 
-    // ── Fast path: RenderDisplay carries a ~1368-char base64 payload.
-    //    DynamicJsonDocument cannot reliably hold it on the ESP8266 heap,
-    //    so we extract the base64 string directly via string search.
     if (chunk.indexOf("\"RenderDisplay\"") > 0) {
-      int b64Start = chunk.indexOf("[\"") + 2;      // step past ["
+      int b64Start = chunk.indexOf("[\"") + 2;
       int b64End   = (b64Start > 1) ? chunk.indexOf('"', b64Start) : -1;
-      if (b64Start < 2 || b64End <= b64Start) {
-        logMessage("ERR: RenderDisplay fmt");
-        continue;
-      }
-      String b64 = chunk.substring(b64Start, b64End);
-      logMessage(">> RenderDisplay len=" + String(b64.length()));
+      if (b64Start < 2 || b64End <= b64Start) { logMessage("ERR: RenderDisplay fmt"); continue; }
       uint8_t* buf = (uint8_t*)malloc(1024);
       if (!buf) { logMessage("ERR: malloc"); continue; }
-      int n = b64Decode(b64.c_str(), buf, 1024);
-      if (n == 1024) {
-        oledRenderBuffer(buf);
-        logMessage(">> Display updated");
-      } else {
-        logMessage("ERR: decoded=" + String(n));
-      }
+      int n = b64Decode(chunk.substring(b64Start, b64End).c_str(), buf, 1024);
+      if (n == 1024) { oledRenderBuffer(buf); logMessage(">> Display updated"); }
+      else logMessage("ERR: decoded=" + String(n));
       free(buf);
       continue;
     }
 
-    // ── Normal path: small messages (handshake, ping, PowerState, …) ─
-    StaticJsonDocument<256> doc;
+    // ── JSON parsing (all non-RenderDisplay messages) ──
+    // StaticJsonDocument<768>: must hold AuthChallenge (128-char sigHex) and
+    // signed OpenDoor/CloseDoor (128-char sigHex + seqno).
+    StaticJsonDocument<768> doc;
     if (deserializeJson(doc, chunk) != DeserializationError::Ok) continue;
-
     int type = doc["type"] | 0;
-    if (type == 0) {
-      // SignalR handshake ACK is an empty {} with no "type" field.
-      // Register immediately — before any pings arrive.
-      logMessage("SignalR: Handshake ACK -> registering");
-      registerStation();
-      continue;
-    }
-    if (type == 6) {
-      // SignalR keep-alive ping — ignore, no response needed.
-      continue;
-    }
 
+    // type 0 = SignalR handshake ACK: wait for AuthChallenge from server (do NOT register yet)
+    if (type == 0) { logMessage("SignalR: Handshake ACK — awaiting AuthChallenge"); continue; }
+    if (type == 6) { ws.sendTXT("{\"type\":6}\x1E"); continue; }  // SignalR ping → pong
     if (type == 1) {
       const char* target = doc["target"] | "";
 
-      if (strcmp(target, "PowerState") == 0) {
+      // ── AuthChallenge: verify server identity before registering ───────────
+      if (strcmp(target, "AuthChallenge") == 0) {
+        const char* nonceHex = doc["arguments"][0] | "";
+        const char* sigHex   = doc["arguments"][1] | "";
+
+        if (!g_hasPubKey) {
+          logMessage("ERR: No public key in EEPROM — cannot verify server — disconnecting");
+          ws.disconnect();
+          continue;
+        }
+        uint8_t nonce[16], sig[64];
+        int nLen = hexDecode(nonceHex, nonce, 16);
+        int sLen = hexDecode(sigHex,   sig,   64);
+        if (nLen != 16 || sLen != 64) {
+          logMessage("ERR: AuthChallenge bad lengths nLen=" + String(nLen) + " sLen=" + String(sLen));
+          ws.disconnect();
+          continue;
+        }
+        if (!verifyP256(g_serverPubKey, nonce, 16, sig)) {
+          logMessage("ERR: AuthChallenge signature INVALID — server key mismatch — disconnecting");
+          ws.disconnect();
+          continue;
+        }
+        logMessage("OK: Server identity verified (P-256) — registering");
+        registerStation();
+
+      } else if (strcmp(target, "PowerState") == 0) {
         bool on = doc["arguments"][0];
-        Wire.beginTransmission(OLED_ADDR);
-        Wire.write(0x00);
-        Wire.write(on ? 0xAF : 0xAE);
-        Wire.endTransmission();
+        Wire.beginTransmission(OLED_ADDR); Wire.write(0x00); Wire.write(on ? 0xAF : 0xAE); Wire.endTransmission();
         logMessage(">> Power: " + String(on ? "ON" : "OFF"));
+
+      } else if (strcmp(target, "OpenDoor") == 0) {
+        uint8_t  addr  = (uint8_t)(int)(doc["arguments"][0] | 0x20);
+        uint8_t  pin   = (uint8_t)(int)(doc["arguments"][1] | 0);
+        int      dur   = doc["arguments"][2] | 5000;
+        uint32_t seq   = (uint32_t)(long)doc["arguments"][3];
+        const char* sh = doc["arguments"][4] | "";
+
+        // Build sigData exactly as the server did: "OpenDoor|addr|pin|dur|seqno"
+        char sigData[80];
+        snprintf(sigData, sizeof(sigData), "OpenDoor|%d|%d|%d|%lu", (int)addr, (int)pin, dur, (unsigned long)seq);
+        if (!verifyMsg(sigData, seq, sh)) {
+          logMessage("ERR: OpenDoor rejected (bad sig/replay)");
+          continue;
+        }
+        g_relayAddr = addr;
+        relayPinOn(addr, pin);
+        if (dur > 0) {
+          g_relayOffAt = millis() + (uint32_t)dur;
+          logMessage(">> Relay ON addr=0x" + String(addr, HEX) + " pin=" + String(pin) + " dur=" + String(dur) + "ms");
+        } else {
+          g_relayOffAt = 0;
+          logMessage(">> Relay ON (toggle) addr=0x" + String(addr, HEX) + " pin=" + String(pin));
+        }
+
+      } else if (strcmp(target, "CloseDoor") == 0) {
+        uint8_t  addr  = (uint8_t)(int)(doc["arguments"][0] | 0x20);
+        uint8_t  pin   = (uint8_t)(int)(doc["arguments"][1] | 0);
+        uint32_t seq   = (uint32_t)(long)doc["arguments"][2];
+        const char* sh = doc["arguments"][3] | "";
+
+        char sigData[64];
+        snprintf(sigData, sizeof(sigData), "CloseDoor|%d|%d|%lu", (int)addr, (int)pin, (unsigned long)seq);
+        if (!verifyMsg(sigData, seq, sh)) {
+          logMessage("ERR: CloseDoor rejected (bad sig/replay)");
+          continue;
+        }
+        g_relayAddr  = addr;
+        g_relayOffAt = 0;
+        relayAllOff(addr);
+        logMessage(">> Relay OFF (toggle close) addr=0x" + String(addr, HEX));
       }
     }
   }
 }
 
-// ── Fragment reassembly buffer ────────────────────
-// ASP.NET Core SignalR sends large messages as multiple WebSocket
-// continuation frames. We reassemble them before passing to handleServerMessage.
 static String _fragBuf = "";
 
-// ── WebSocket Events ──────────────────────────────
 void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
   switch (type) {
     case WStype_CONNECTED:
-      wsConnected = true;
-      _fragBuf = "";
-      logMessage("WS: Connected");
-      oledShowStatus("Connected!", WS_HOST);
-      signalRHandshake();
-      break;
+      wsConnected = true; _fragBuf = "";
+      logMessage("WS: Connected"); oledShowStatus("Connected!", g_wsHost); signalRHandshake(); break;
     case WStype_DISCONNECTED:
-      wsConnected = false;
-      _fragBuf = "";
-      logMessage("WS: Disconnected");
-      oledShowStatus("Disconnected", "Retrying...");
-      break;
-
-    // Complete single-frame message (small messages: handshake ACK, pings)
+      wsConnected = false; _fragBuf = "";
+      g_seqnoInit = false; g_seqnoLast = 0;   // reset anti-replay counter for next session
+      logMessage("WS: Disconnected"); oledShowStatus("Disconnected", "Waiting server..."); break;
     case WStype_TEXT:
-      handleServerMessage(payload, length);
-      break;
-
-    // First fragment of a multi-frame message
+      handleServerMessage(payload, length); break;
     case WStype_FRAGMENT_TEXT_START:
-      _fragBuf = String((char*)payload);
-      logMessage("WS FRAG START len=" + String(length));
-      break;
-
-    // Middle fragment(s)
+      _fragBuf = String((char*)payload); break;
     case WStype_FRAGMENT:
-      _fragBuf += String((char*)payload);
-      logMessage("WS FRAG MID len=" + String(length));
-      break;
-
-    // Final fragment — assemble and process.
-    // For RenderDisplay we decode *directly* from _fragBuf to avoid allocating
-    // a second 1419-byte String copy (peak drops from ~6.6 KB to ~2.4 KB).
+      _fragBuf += String((char*)payload); break;
     case WStype_FRAGMENT_FIN:
       _fragBuf += String((char*)payload);
-      logMessage("WS FRAG END total=" + String(_fragBuf.length()));
       if (_fragBuf.indexOf("\"RenderDisplay\"") > 0) {
         int b64S = _fragBuf.indexOf("[\"") + 2;
         int b64E = (b64S > 1) ? _fragBuf.indexOf('"', b64S) : -1;
         if (b64S >= 2 && b64E > b64S) {
-          logMessage(">> RenderDisplay len=" + String(b64E - b64S));
           uint8_t* buf = (uint8_t*)malloc(1024);
-          if (buf) {
-            _fragBuf[b64E] = '\0';                    // temp-terminate in place
-            int n = b64Decode(_fragBuf.c_str() + b64S, buf, 1024);
-            if (n == 1024) { oledRenderBuffer(buf); logMessage(">> Display updated"); }
-            else            { logMessage("ERR: decoded=" + String(n)); }
-            free(buf);
-          } else { logMessage("ERR: malloc"); }
-        } else { logMessage("ERR: RD fmt"); }
-      } else {
-        handleServerMessage((uint8_t*)_fragBuf.c_str(), _fragBuf.length());
-      }
-      _fragBuf = "";
-      break;
-
-    case WStype_ERROR:
-      logMessage("WS: Error");
-      break;
-    default:
-      logMessage("WS: evt=" + String((int)type));
-      break;
+          if (buf) { _fragBuf[b64E] = '\0'; int n = b64Decode(_fragBuf.c_str() + b64S, buf, 1024); if (n == 1024) oledRenderBuffer(buf); free(buf); }
+        }
+      } else { handleServerMessage((uint8_t*)_fragBuf.c_str(), _fragBuf.length()); }
+      _fragBuf = ""; break;
+    case WStype_ERROR: logMessage("WS: Error"); break;
+    default: logMessage("WS: evt=" + String((int)type)); break;
   }
 }
 
@@ -363,50 +508,102 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
 //  Setup
 // ══════════════════════════════════════════════════
 void setup() {
+  Serial.setRxBufferSize(512); // PROVISION command with pubkey is ~240 chars; default 64-byte buffer overflows
   Serial.begin(115200);
   Wire.begin(SDA_PIN, SCL_PIN);
+  Wire.setClock(400000);
 
-  // OLED
-  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
-    Serial.println("ERR: OLED");
-    for(;;);
-  }
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) { Serial.println("ERR: OLED"); for(;;); }
   oledShowStatus("Booting...");
   logMessage("--- Boot ---");
 
-  // Keypad
-  if (initKeypad()) {
-    logMessage("OK: Keypad at 0x" + String(KEYPAD_ADDR, HEX));
-  } else {
-    logMessage("ERR: Keypad not found at 0x" + String(KEYPAD_ADDR, HEX));
+  if (initKeypad()) logMessage("OK: Keypad at 0x" + String(KEYPAD_ADDR, HEX));
+  else              logMessage("ERR: Keypad not found at 0x" + String(KEYPAD_ADDR, HEX));
+
+  EEPROM.begin(EEPROM_SIZE);
+  ProvData pdata;
+  EEPROM.get(0, pdata);
+
+  // ── Auto-provision from build-time config.h (first boot only) ────────────
+  // If EEPROM is blank/stale AND config.h has credentials baked in at compile
+  // time, write them to EEPROM now.  Subsequent boots use EEPROM directly.
+  if (pdata.magic != PROV_MAGIC && strlen(CFG_WIFI_SSID) > 0) {
+    logMessage("Auto-provisioning from build-time config.h...");
+    memset(&pdata, 0, sizeof(pdata));
+    pdata.magic = PROV_MAGIC;
+    strncpy(pdata.ssid,     CFG_WIFI_SSID,     sizeof(pdata.ssid)     - 1);
+    strncpy(pdata.password, CFG_WIFI_PASSWORD,  sizeof(pdata.password) - 1);
+    strncpy(pdata.server,   CFG_SERVER_HOST,    sizeof(pdata.server)   - 1);
+    pdata.port = (uint16_t)CFG_SERVER_PORT;
+    if (strlen(CFG_SERVER_PUBKEY) == 128) {
+      hexDecode(CFG_SERVER_PUBKEY, pdata.pubkey, 64);
+      pdata.hasPubkey = 1;
+      logMessage("OK: P-256 pubkey loaded from build config");
+    }
+    EEPROM.put(0, pdata);
+    EEPROM.commit();
+    logMessage("EEPROM provisioned from build config");
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // ── Key rotation: update EEPROM pubkey if config.h has a different key ────
+  // Runs even when EEPROM is already provisioned — allows key rotation after a
+  // server key change without losing WiFi credentials or bumping PROV_MAGIC.
+  // Just re-flash the firmware (WriteConfigHeader bakes the current server key).
+  if (pdata.magic == PROV_MAGIC && strlen(CFG_SERVER_PUBKEY) == 128) {
+    uint8_t cfgKey[64];
+    hexDecode(CFG_SERVER_PUBKEY, cfgKey, 64);
+    if (!pdata.hasPubkey || memcmp(pdata.pubkey, cfgKey, 64) != 0) {
+      memcpy(pdata.pubkey, cfgKey, 64);
+      pdata.hasPubkey = 1;
+      EEPROM.put(0, pdata);
+      EEPROM.commit();
+      logMessage("Key: P-256 pubkey updated from config.h (key rotation)");
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // Cache public key globally so event handlers can use it without touching EEPROM
+  if (pdata.hasPubkey) {
+    memcpy(g_serverPubKey, pdata.pubkey, 64);
+    g_hasPubKey = true;
   }
 
-  // WiFi
+  const char* wifiSsid;
+  const char* wifiPass;
+
+  if (pdata.magic == PROV_MAGIC && strlen(pdata.ssid) > 0) {
+    wifiSsid = pdata.ssid;
+    wifiPass = pdata.password;
+    logMessage("WiFi: using provisioned SSID=" + String(wifiSsid));
+    logMessage(pdata.hasPubkey ? "Key: P-256 public key present" : "WARN: no public key — messages cannot be verified");
+  } else {
+    wifiSsid = WIFI_SSID;
+    wifiPass = WIFI_PASS;
+    logMessage("WiFi: using hardcoded SSID=" + String(wifiSsid));
+  }
+
   oledShowStatus("WiFi connecting...");
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  WiFi.begin(wifiSsid, wifiPass);
   Serial.print("WiFi");
   for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) {
     delay(500); Serial.print(".");
+    checkProvisionSerial();
   }
   if (WiFi.status() != WL_CONNECTED) {
-    logMessage("ERR: WiFi failed");
-    oledShowStatus("WiFi FAILED!", "Restarting...");
-    delay(2000);
-    ESP.restart();
+    logMessage("ERR: WiFi failed — waiting for PROVISION via UART");
+    oledShowStatus("WiFi FAILED!", "Send PROVISION", "via UART");
+    while (true) { checkProvisionSerial(); delay(100); }
   }
 
   String ip = WiFi.localIP().toString();
   logMessage("OK: WiFi " + ip);
 
-  display.clearDisplay();
-  display.setTextColor(WHITE);
-  display.setTextSize(1);
-  display.setCursor(0, 0);
-  display.println("Connected!");
-  display.println("Log:");
-  display.setTextSize(2);
-  display.println(ip);
+  display.clearDisplay(); display.setTextColor(WHITE); display.setTextSize(1);
+  display.setCursor(0, 0); display.println("Ready! Log:");
+  display.setTextSize(2); display.println(ip);
+  display.setTextSize(1); display.println(""); display.println("Waiting for server...");
   display.display();
 
   logServer.on("/", handleRoot);
@@ -414,29 +611,70 @@ void setup() {
   logServer.begin();
   logMessage("Log: http://" + ip);
 
-  ws.begin(WS_HOST, WS_PORT, WS_PATH);
   ws.onEvent(onWsEvent);
-  ws.setReconnectInterval(3000);
+  ws.setReconnectInterval(5000);
   ws.enableHeartbeat(15000, 3000, 2);
 
+  // ── Auto-connect to SignalR on boot ───────────────────────────────────────
+  // Server address is baked into firmware via config.h — no /connect push needed.
+  if (pdata.magic == PROV_MAGIC && strlen(pdata.server) > 0) {
+    strncpy(g_wsHost, pdata.server, sizeof(g_wsHost) - 1);
+    g_wsPort    = pdata.port;
+    g_wsStarted = true;
+    ws.begin(g_wsHost, g_wsPort, WS_PATH);
+    logMessage("Auto-connecting to " + String(g_wsHost) + ":" + String(g_wsPort));
+    oledShowStatus("Connecting...", g_wsHost);
+  } else {
+    logMessage("WARN: No server configured — re-flash with flashFirst=true");
+    oledShowStatus("No server", "Re-flash device");
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   logMessage("--- Ready ---");
+
+  // ── Show provisioning status after Ready ──────────────────────────────────
+  // Reads current EEPROM state so the user can confirm provisioning is intact
+  // every time the device boots (visible in the web logger).
+  {
+    ProvData cur;
+    EEPROM.get(0, cur);
+    if (cur.magic == PROV_MAGIC) {
+      if (cur.hasPubkey) {
+        char hint[9] = {};
+        for (int i = 0; i < 4; i++) sprintf(hint + 2*i, "%02x", cur.pubkey[i]);
+        logMessage("PROVISION: server=" + String(cur.server) + ":" + String(cur.port)
+                   + " pubkey=" + String(hint) + "...");
+      } else {
+        logMessage("PROVISION: server=" + String(cur.server) + ":" + String(cur.port)
+                   + " pubkey=MISSING");
+      }
+    } else {
+      logMessage("PROVISION: not set (hardcoded WiFi)");
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
 }
 
 // ══════════════════════════════════════════════════
 //  Loop
 // ══════════════════════════════════════════════════
 void loop() {
-  ws.loop();
+  checkProvisionSerial();
+  if (g_wsStarted) ws.loop();
   logServer.handleClient();
+
+  // Non-blocking relay auto-off
+  if (g_relayOffAt != 0 && millis() >= g_relayOffAt) {
+    relayAllOff(g_relayAddr);
+    g_relayOffAt = 0;
+    logMessage(">> Relay OFF");
+  }
 
   char key = getKeyFromPCF8574();
   if (key != 0) {
     logMessage("Key: " + String(key));
-    if (wsConnected) {
-      sendKey(key);
-    } else {
-      logMessage("WARN: Not connected");
-    }
+    if (wsConnected) sendKey(key);
+    else             logMessage("WARN: Not connected");
   }
 
   if (WiFi.status() != WL_CONNECTED) {

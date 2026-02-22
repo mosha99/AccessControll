@@ -13,4 +13,7 @@ public class Station
 
     public DateTime RegisteredAt { get; set; } = DateTime.UtcNow;
     public DateTime? LastSeen { get; set; }
+
+    /// <summary>Last IP where this station was seen on the network (used for reconnect).</summary>
+    public string? LastKnownIp { get; set; }
 }

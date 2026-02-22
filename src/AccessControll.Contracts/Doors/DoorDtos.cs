@@ -9,7 +9,12 @@ public record DoorDto(
     bool IsLocked,
     bool IsEnabled,
     string? HardwareId,
-    DateTime CreatedAt);
+    DateTime CreatedAt,
+    string? StationMacAddress,
+    string I2cAddress,
+    string I2cPin,
+    int DurationMs,
+    bool IsMomentary);
 
 public record DoorAccessLogDto(
     Guid Id,

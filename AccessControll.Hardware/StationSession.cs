@@ -147,14 +147,14 @@ public class StationSession
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
         var doorResult = await mediator.Send(
-            new ControlDoorCommand(null, doorCode, userId, false, "0.0.0.0"));
+            new ControlDoorCommand(null, doorCode, userId, false, "0.0.0.0", _mac));
 
         if (doorResult.Succeeded)
         {
             RenderAndSend("دسترسی مجاز", "✓ خوش آمدید", Color.White);
             await Task.Delay(1000);
             await mediator.Send(
-                new ControlDoorCommand(null, doorCode, userId, true, "0.0.0.0"));
+                new ControlDoorCommand(null, doorCode, userId, true, "0.0.0.0", _mac));
         }
         else
         {

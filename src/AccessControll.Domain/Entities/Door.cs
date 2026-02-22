@@ -12,6 +12,12 @@ public class Door
     public DateTime? LastModifiedAt { get; set; }
     public string? HardwareId { get; set; }
 
+    public string? StationMacAddress { get; set; }
+    public string I2cAddress { get; set; } = "0x20";
+    public string I2cPin { get; set; } = "0";
+    public int DurationMs { get; set; } = 5000;
+    public bool IsMomentary { get; set; } = true;
+
     public virtual ICollection<DoorAccessLog> AccessLogs { get; set; } = new List<DoorAccessLog>();
     public virtual ICollection<UserDoorPermission> UserPermissions { get; set; } = new List<UserDoorPermission>();
     public int Code { get; set; }

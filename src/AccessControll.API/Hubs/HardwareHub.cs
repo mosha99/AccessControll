@@ -1,5 +1,9 @@
 using AccessControll.Hardware;
+using AccessControll.Infrastructure.Data;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.EntityFrameworkCore;
+using System.Collections.Concurrent;
+using System.Security.Cryptography;
 
 namespace AccessControll.API.Hubs;
 
@@ -7,43 +11,117 @@ public class HardwareHub : Hub
 {
     private readonly StationConnectionManager _connectionManager;
     private readonly StationSessionManager _sessionManager;
+    private readonly IHubContext<DoorHub> _doorHub;
+    private readonly ServerKeyService _keyService;
+    private readonly ApplicationDbContext _db;
 
-    public HardwareHub(StationConnectionManager connectionManager, StationSessionManager sessionManager)
+    // connectionId → nonce sent with the challenge; cleared on RegisterStation or Disconnect
+    private static readonly ConcurrentDictionary<string, byte[]> _pendingChallenges = new();
+
+    public HardwareHub(
+        StationConnectionManager connectionManager,
+        StationSessionManager sessionManager,
+        IHubContext<DoorHub> doorHub,
+        ServerKeyService keyService,
+        ApplicationDbContext db)
     {
         _connectionManager = connectionManager;
-        _sessionManager = sessionManager;
+        _sessionManager    = sessionManager;
+        _doorHub           = doorHub;
+        _keyService        = keyService;
+        _db                = db;
     }
 
-    public override Task OnConnectedAsync()
+    /// <summary>
+    /// On every new WebSocket connection, generate a 16-byte random nonce, sign it with
+    /// the server's P-256 private key, and send both values as <c>AuthChallenge</c>.
+    /// The ESP8266 verifies the signature against the provisioned public key; only if valid
+    /// does it proceed to call <c>RegisterStation</c>.
+    ///
+    /// The pending nonce is stored so that <c>RegisterStation</c> can confirm the challenge
+    /// was issued (defense-in-depth: prevents registration without prior challenge).
+    /// </summary>
+    public override async Task OnConnectedAsync()
     {
-        Console.WriteLine($"[HW] Station connecting: {Context.ConnectionId} — waiting for RegisterStation");
-        return base.OnConnectedAsync();
+        var nonce     = RandomNumberGenerator.GetBytes(16);
+        var signature = _keyService.Sign(nonce);
+
+        _pendingChallenges[Context.ConnectionId] = nonce;
+
+        var nonceHex = Convert.ToHexString(nonce).ToLowerInvariant();    // 32 hex chars
+        var sigHex   = Convert.ToHexString(signature).ToLowerInvariant(); // 128 hex chars
+
+        Console.WriteLine($"[HW] {Context.ConnectionId} connected — AuthChallenge sent (nonce={nonceHex[..8]}…)");
+        await Clients.Caller.SendAsync("AuthChallenge", nonceHex, sigHex);
+
+        await base.OnConnectedAsync();
     }
 
-    public override Task OnDisconnectedAsync(Exception? exception)
+    public override async Task OnDisconnectedAsync(Exception? exception)
     {
+        _pendingChallenges.TryRemove(Context.ConnectionId, out _);
+
         var mac = _connectionManager.GetMac(Context.ConnectionId);
         if (mac != null)
         {
             Console.WriteLine($"[HW] Station disconnected: {mac}");
             _connectionManager.Unregister(Context.ConnectionId);
             _sessionManager.RemoveSession(mac);
+
+            await _doorHub.Clients.Group("all-doors")
+                .SendAsync("StationStatusChanged", mac, false);
         }
-        return base.OnDisconnectedAsync(exception);
+        await base.OnDisconnectedAsync(exception);
     }
 
     /// <summary>
-    /// Called by the ESP8266 after the SignalR handshake to identify itself by MAC address.
-    /// Creates a dedicated session; the display pipeline was wired in Program.cs.
+    /// Called by the ESP8266 after it has successfully verified the <c>AuthChallenge</c>
+    /// signature locally with micro-ecc.
+    ///
+    /// Two gates before registration is allowed:
+    ///   1. A pending challenge must exist (proves the auth flow was followed, not bypassed).
+    ///   2. The MAC address must be registered and enabled in the database — even if the
+    ///      server itself booted/provisioned the device, it is not allowed to connect until
+    ///      it has been explicitly registered (prevents rogue or decommissioned stations).
     /// </summary>
-    public Task RegisterStation(string macAddress)
+    public async Task RegisterStation(string macAddress)
     {
+        // ── Gate 1: challenge must have been issued for this connection ────────
+        if (!_pendingChallenges.TryRemove(Context.ConnectionId, out _))
+        {
+            Console.WriteLine($"[HW] RegisterStation from {Context.ConnectionId} without a pending challenge — aborting");
+            Context.Abort();
+            return;
+        }
+
         var mac = macAddress.ToUpperInvariant();
-        Console.WriteLine($"[HW] Station registered: {mac} (conn={Context.ConnectionId})");
+
+        // ── Gate 2: MAC must be in the DB and enabled ─────────────────────────
+        var station = await _db.Stations
+            .FirstOrDefaultAsync(s => s.MacAddress == mac);
+
+        if (station is null)
+        {
+            Console.WriteLine($"[HW] MAC {mac} is not registered in the database — rejecting");
+            Context.Abort();
+            return;
+        }
+
+        if (!station.IsEnabled)
+        {
+            Console.WriteLine($"[HW] Station {mac} is disabled — rejecting");
+            Context.Abort();
+            return;
+        }
+
+        // ── Accepted ──────────────────────────────────────────────────────────
+        Console.WriteLine($"[HW] Station registered: {mac} — '{station.Name}' (conn={Context.ConnectionId})");
 
         _connectionManager.Register(mac, Context.ConnectionId);
         _sessionManager.CreateSession(mac);
-        return Task.CompletedTask;
+
+        await _doorHub.Clients.Group("all-doors")
+            .SendAsync("StationStatusChanged", mac, true);
     }
 
     /// <summary>

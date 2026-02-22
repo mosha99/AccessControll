@@ -11,15 +11,17 @@ namespace AccessControll.Application.Doors;
 public record GetAllDoorsQuery : IRequest<IEnumerable<DoorDto>>;
 public record GetDoorByIdQuery(Guid Id) : IRequest<DoorDto?>;
 
-public record CreateDoorCommand(string Name, int Code, string Description, string Location, string? HardwareId)
+public record CreateDoorCommand(string Name, int Code, string Description, string Location, string? HardwareId,
+    string? StationMacAddress, string I2cAddress, string I2cPin, int DurationMs, bool IsMomentary)
     : IRequest<DoorDto>;
 
-public record UpdateDoorCommand(Guid Id, string Name, int Code, string Description, string Location, bool IsEnabled, string? HardwareId)
+public record UpdateDoorCommand(Guid Id, string Name, int Code, string Description, string Location, bool IsEnabled,
+    string? HardwareId, string? StationMacAddress, string I2cAddress, string I2cPin, int DurationMs, bool IsMomentary)
     : IRequest<DoorDto>;
 
 public record DeleteDoorCommand(Guid Id) : IRequest;
 
-public record ControlDoorCommand(Guid? DoorId, int? DoorCode, string UserId, bool Lock, string? IpAddress)
+public record ControlDoorCommand(Guid? DoorId, int? DoorCode, string UserId, bool Lock, string? IpAddress, string? StationMac = null)
     : IRequest<(bool Succeeded, string Message)>;
 
 public record GetDoorLogsQuery(Guid? DoorId, string? UserId, DateTime? From, DateTime? To, int Page, int PageSize)
@@ -71,6 +73,11 @@ public class CreateDoorCommandHandler : IRequestHandler<CreateDoorCommand, DoorD
             Description = request.Description,
             Location = request.Location,
             HardwareId = request.HardwareId,
+            StationMacAddress = request.StationMacAddress,
+            I2cAddress = request.I2cAddress,
+            I2cPin = request.I2cPin,
+            DurationMs = request.DurationMs,
+            IsMomentary = request.IsMomentary,
             IsLocked = true,
             IsEnabled = true
         };
@@ -95,6 +102,11 @@ public class UpdateDoorCommandHandler : IRequestHandler<UpdateDoorCommand, DoorD
         door.Location = request.Location;
         door.IsEnabled = request.IsEnabled;
         door.HardwareId = request.HardwareId;
+        door.StationMacAddress = request.StationMacAddress;
+        door.I2cAddress = request.I2cAddress;
+        door.I2cPin = request.I2cPin;
+        door.DurationMs = request.DurationMs;
+        door.IsMomentary = request.IsMomentary;
         door.LastModifiedAt = DateTime.UtcNow;
 
         var updated = await _repo.UpdateAsync(door);
@@ -115,13 +127,17 @@ public class ControlDoorCommandHandler : IRequestHandler<ControlDoorCommand, (bo
     private readonly IDoorAccessLogRepository _logRepo;
     private readonly IUserDoorPermissionRepository _permRepo;
     private readonly IPhysicalPortService _portService;
+    private readonly IStationRelayService _relayService;
 
-    public ControlDoorCommandHandler(IDoorRepository doorRepo, IDoorAccessLogRepository logRepo, IUserDoorPermissionRepository permRepo, IPhysicalPortService portService)
+    public ControlDoorCommandHandler(IDoorRepository doorRepo, IDoorAccessLogRepository logRepo,
+        IUserDoorPermissionRepository permRepo, IPhysicalPortService portService,
+        IStationRelayService relayService)
     {
         _doorRepo = doorRepo;
         _logRepo = logRepo;
         _permRepo = permRepo;
         _portService = portService;
+        _relayService = relayService;
     }
 
     public async Task<(bool Succeeded, string Message)> Handle(ControlDoorCommand request, CancellationToken ct)
@@ -131,7 +147,13 @@ public class ControlDoorCommandHandler : IRequestHandler<ControlDoorCommand, (bo
         if (request.DoorId == null)
         {
             if (request.DoorCode == null) return (false, "در یافت نشد");
-            var byCode = await _doorRepo.GetByCodeAsync(request.DoorCode.Value);
+
+            Door? byCode;
+            if (request.StationMac != null)
+                byCode = await _doorRepo.GetByCodeAndStationAsync(request.DoorCode.Value, request.StationMac);
+            else
+                byCode = await _doorRepo.GetByCodeAsync(request.DoorCode.Value);
+
             if (byCode == null) return (false, "در یافت نشد");
             doorId = byCode.Id;
         }
@@ -189,8 +211,20 @@ public class ControlDoorCommandHandler : IRequestHandler<ControlDoorCommand, (bo
         var action = request.Lock ? DoorAction.Lock : DoorAction.Unlock;
         await _logRepo.LogAccessAsync(doorId, request.UserId, action, AccessResult.Success, request.IpAddress);
 
-        if (door.HardwareId is not null)
+        // I2C relay on station
+        if (door.StationMacAddress != null)
         {
+            if (!request.Lock)
+                // Unlock: activate relay (momentary = auto-off after DurationMs; toggle = stay on)
+                await _relayService.OpenDoorAsync(door.StationMacAddress, door.I2cAddress, door.I2cPin,
+                    door.IsMomentary ? door.DurationMs : 0);
+            else if (!door.IsMomentary)
+                // Lock: for toggle outputs, explicitly turn relay off
+                await _relayService.CloseDoorAsync(door.StationMacAddress, door.I2cAddress, door.I2cPin);
+        }
+        else if (door.HardwareId is not null)
+        {
+            // Fallback: legacy GPIO relay on server
             _portService.SetPortState(door.HardwareId, !request.Lock);
         }
 
@@ -244,7 +278,8 @@ public class GetUserPermissionsForDoorsQueryHandler : IRequestHandler<GetUserPer
 internal static class DoorMappingExtensions
 {
     public static DoorDto ToDto(this Door d) =>
-    new(d.Id, d.Name, d.Code, d.Description, d.Location, d.IsLocked, d.IsEnabled, d.HardwareId, d.CreatedAt);
+    new(d.Id, d.Name, d.Code, d.Description, d.Location, d.IsLocked, d.IsEnabled, d.HardwareId, d.CreatedAt,
+        d.StationMacAddress, d.I2cAddress, d.I2cPin, d.DurationMs, d.IsMomentary);
 
     public static UserPermissionDto ToDto(this UserDoorPermission p) =>
     new(p.Id, p.UserId, p.User?.FullName ?? "", p.User?.Email ?? "",

@@ -14,7 +14,8 @@ public record DoorDto(
     string I2cAddress,
     string I2cPin,
     int DurationMs,
-    bool IsMomentary);
+    bool IsMomentary,
+    bool IsActiveLow);
 
 public record DoorAccessLogDto(
     Guid Id,

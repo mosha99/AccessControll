@@ -12,11 +12,11 @@ public record GetAllDoorsQuery : IRequest<IEnumerable<DoorDto>>;
 public record GetDoorByIdQuery(Guid Id) : IRequest<DoorDto?>;
 
 public record CreateDoorCommand(string Name, int Code, string Description, string Location, string? HardwareId,
-    string? StationMacAddress, string I2cAddress, string I2cPin, int DurationMs, bool IsMomentary)
+    string? StationMacAddress, string I2cAddress, string I2cPin, int DurationMs, bool IsMomentary, bool IsActiveLow = true)
     : IRequest<DoorDto>;
 
 public record UpdateDoorCommand(Guid Id, string Name, int Code, string Description, string Location, bool IsEnabled,
-    string? HardwareId, string? StationMacAddress, string I2cAddress, string I2cPin, int DurationMs, bool IsMomentary)
+    string? HardwareId, string? StationMacAddress, string I2cAddress, string I2cPin, int DurationMs, bool IsMomentary, bool IsActiveLow = true)
     : IRequest<DoorDto>;
 
 public record DeleteDoorCommand(Guid Id) : IRequest;
@@ -78,6 +78,7 @@ public class CreateDoorCommandHandler : IRequestHandler<CreateDoorCommand, DoorD
             I2cPin = request.I2cPin,
             DurationMs = request.DurationMs,
             IsMomentary = request.IsMomentary,
+            IsActiveLow = request.IsActiveLow,
             IsLocked = true,
             IsEnabled = true
         };
@@ -107,6 +108,7 @@ public class UpdateDoorCommandHandler : IRequestHandler<UpdateDoorCommand, DoorD
         door.I2cPin = request.I2cPin;
         door.DurationMs = request.DurationMs;
         door.IsMomentary = request.IsMomentary;
+        door.IsActiveLow = request.IsActiveLow;
         door.LastModifiedAt = DateTime.UtcNow;
 
         var updated = await _repo.UpdateAsync(door);
@@ -217,10 +219,10 @@ public class ControlDoorCommandHandler : IRequestHandler<ControlDoorCommand, (bo
             if (!request.Lock)
                 // Unlock: activate relay (momentary = auto-off after DurationMs; toggle = stay on)
                 await _relayService.OpenDoorAsync(door.StationMacAddress, door.I2cAddress, door.I2cPin,
-                    door.IsMomentary ? door.DurationMs : 0);
+                    door.IsMomentary ? door.DurationMs : 0, door.IsActiveLow);
             else if (!door.IsMomentary)
                 // Lock: for toggle outputs, explicitly turn relay off
-                await _relayService.CloseDoorAsync(door.StationMacAddress, door.I2cAddress, door.I2cPin);
+                await _relayService.CloseDoorAsync(door.StationMacAddress, door.I2cAddress, door.I2cPin, door.IsActiveLow);
         }
         else if (door.HardwareId is not null)
         {
@@ -279,7 +281,7 @@ internal static class DoorMappingExtensions
 {
     public static DoorDto ToDto(this Door d) =>
     new(d.Id, d.Name, d.Code, d.Description, d.Location, d.IsLocked, d.IsEnabled, d.HardwareId, d.CreatedAt,
-        d.StationMacAddress, d.I2cAddress, d.I2cPin, d.DurationMs, d.IsMomentary);
+        d.StationMacAddress, d.I2cAddress, d.I2cPin, d.DurationMs, d.IsMomentary, d.IsActiveLow);
 
     public static UserPermissionDto ToDto(this UserDoorPermission p) =>
     new(p.Id, p.UserId, p.User?.FullName ?? "", p.User?.Email ?? "",

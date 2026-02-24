@@ -92,7 +92,8 @@ public class ProvisioningService
     /// Must be called before <see cref="FlashFirmwareAsync"/> so the compiler
     /// picks up the updated values.
     /// </summary>
-    public void WriteConfigHeader(string ssid, string password)
+    /// <param name="stationType">0=General, 1=Door, 2=RemoteControl — baked into firmware.</param>
+    public void WriteConfigHeader(string ssid, string password, int stationType = 0)
     {
         var sketchPath = GetSketchPath()
             ?? throw new InvalidOperationException("Sketch path not found");
@@ -115,6 +116,7 @@ public class ProvisioningService
             #define CFG_SERVER_HOST   "{host}"
             #define CFG_SERVER_PORT   {port}
             #define CFG_SERVER_PUBKEY "{_keyService.PublicKeyHex}"
+            #define CFG_STATION_TYPE  {stationType}
 
             """;
 

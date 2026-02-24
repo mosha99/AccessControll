@@ -1,5 +1,6 @@
 using AccessControll.API.Hubs;
 using AccessControll.Domain.Entities;
+using AccessControll.Domain.Enums;
 using AccessControll.Hardware;
 using AccessControll.Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
@@ -70,6 +71,7 @@ public class StationsController : ControllerBase
             s.RegisteredAt,
             s.LastSeen,
             s.LastKnownIp,
+            Type        = (int)s.Type,
             IsConnected = _connectionManager.IsConnected(s.MacAddress)
         }));
     }
@@ -98,7 +100,7 @@ public class StationsController : ControllerBase
             // ── Step 1: Bake WiFi creds + server pubkey into config.h ─────────────
             // The sketch reads config.h on first boot and writes to EEPROM.
             // No UART roundtrip needed — credentials travel inside the firmware.
-            try { _provisioning.WriteConfigHeader(req.Ssid, req.Password); }
+            try { _provisioning.WriteConfigHeader(req.Ssid, req.Password, req.StationType); }
             catch (Exception ex)
             {
                 return BadRequest(new { message = $"خطا در نوشتن config.h: {ex.Message}", flashOutput });
@@ -147,6 +149,7 @@ public class StationsController : ControllerBase
                 Description  = req.Description,
                 IsEnabled    = true,
                 RegisteredAt = DateTime.UtcNow,
+                Type         = (StationType)req.StationType,
             });
             await _db.SaveChangesAsync();
         }
@@ -171,7 +174,8 @@ public class StationsController : ControllerBase
             Description  = req.Description,
             IsEnabled    = true,
             RegisteredAt = DateTime.UtcNow,
-            LastKnownIp  = req.Ip
+            LastKnownIp  = req.Ip,
+            Type         = (AccessControll.Domain.Enums.StationType)(req.Type ?? 0)
         };
 
         _db.Stations.Add(station);
@@ -190,8 +194,26 @@ public class StationsController : ControllerBase
         station.Name        = req.Name;
         station.Description = req.Description;
         station.IsEnabled   = req.IsEnabled;
+        station.Type        = (AccessControll.Domain.Enums.StationType)req.Type;
         await _db.SaveChangesAsync();
         return Ok(station);
+    }
+
+    /// <summary>
+    /// Informs the caller of the current connection status.
+    /// The ESP reconnects automatically every ~5 s after registration,
+    /// so no explicit trigger is needed — this endpoint just returns the live state.
+    /// </summary>
+    [HttpPost("{mac}/connect")]
+    public IActionResult Connect(string mac)
+    {
+        mac = mac.ToUpperInvariant();
+        var connected = _connectionManager.IsConnected(mac);
+        return Ok(new
+        {
+            connected,
+            message = connected ? "دستگاه در حال حاضر متصل است" : "دستگاه به زودی به صورت خودکار متصل می‌شود"
+        });
     }
 
     /// <summary>Remove a registered station.</summary>
@@ -207,6 +229,6 @@ public class StationsController : ControllerBase
     }
 }
 
-public record RegisterStationRequest(string MacAddress, string Name, string? Description, string? Ip);
-public record UpdateStationRequest(string Name, string? Description, bool IsEnabled);
-public record ProvisionRequest(string PortName, string Ssid, string Password, string Name, string? Description, bool FlashFirst = false, string? SessionId = null);
+public record RegisterStationRequest(string MacAddress, string Name, string? Description, string? Ip, int? Type = null);
+public record UpdateStationRequest(string Name, string? Description, bool IsEnabled, int Type = 0);
+public record ProvisionRequest(string PortName, string Ssid, string Password, string Name, string? Description, bool FlashFirst = false, string? SessionId = null, int StationType = 0);

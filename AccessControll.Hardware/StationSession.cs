@@ -1,5 +1,7 @@
 using AccessControll.Application.Auth;
 using AccessControll.Application.Doors;
+using AccessControll.Domain.Enums;
+using AccessControll.Domain.Interfaces;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using SixLabors.ImageSharp;
@@ -20,6 +22,7 @@ namespace AccessControll.Hardware;
 public class StationSession
 {
     private readonly string _mac;
+    private readonly StationType _type;
     private readonly Oled _oled;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly Func<byte[], Task> _sendDisplay;
@@ -31,15 +34,16 @@ public class StationSession
     private string _authBuffer = "";
     private const int AuthCodeLength = 6;
 
-    // ── Door-code state ──────────────────────────────────────────────────────
+    // ── Door-code state (General station only) ───────────────────────────────
     private string _doorBuffer = "";
     private const int DoorCodeLength = 2;
     private string? _pendingUserId;
 
-    public StationSession(string mac, Oled oled, IServiceScopeFactory scopeFactory,
+    public StationSession(string mac, StationType type, Oled oled, IServiceScopeFactory scopeFactory,
         Func<byte[], Task> sendDisplay)
     {
         _mac = mac;
+        _type = type;
         _oled = oled;
         _scopeFactory = scopeFactory;
         _sendDisplay = sendDisplay;
@@ -91,25 +95,36 @@ public class StationSession
         {
             _pendingUserId = result.UserId;
             RenderAndSend("در حال پردازش", result.Name!, Color.White);
-            await Task.Delay(2000);
+            await Task.Delay(500);
 
-            // Transition to door-code entry
-            _doorBuffer = "";
-            _state = State.DoorCode;
-            ShowDoorUI();
-
-            // Auto-cancel after 5 s if no door code entered
-            _ = Task.Run(async () =>
+            if (_type == StationType.Door)
             {
-                await Task.Delay(TimeSpan.FromSeconds(5));
-                if (_state == State.DoorCode)
+                // Door station: auto-open all outputs assigned to this station
+                // that the authenticated user has permission to access.
+                _ = RunDoorStationFlow(result.UserId, result.Name!);
+            }
+            else
+            {
+                // General station: ask user to enter a 2-digit output code.
+                // The lookup is global (not restricted to this station's outputs).
+                await Task.Delay(1500);
+                _doorBuffer = "";
+                _state = State.DoorCode;
+                ShowDoorUI();
+
+                // Auto-cancel after 5 s if no code entered
+                _ = Task.Run(async () =>
                 {
-                    _pendingUserId = null;
-                    _doorBuffer = "";
-                    _state = State.Auth;
-                    ShowAuthUI();
-                }
-            });
+                    await Task.Delay(TimeSpan.FromSeconds(5));
+                    if (_state == State.DoorCode)
+                    {
+                        _pendingUserId = null;
+                        _doorBuffer = "";
+                        _state = State.Auth;
+                        ShowAuthUI();
+                    }
+                });
+            }
         }
         else
         {
@@ -141,24 +156,83 @@ public class StationSession
         }
     }
 
+    /// <summary>
+    /// General station: look up the output by code (globally — not restricted to this station),
+    /// open it, wait, then close it (if toggle mode the ControlDoor handler manages that).
+    /// </summary>
     private async Task RunDoorControl(int doorCode, string userId)
     {
         using var scope = _scopeFactory.CreateScope();
         var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
 
+        // StationMac = null → global code lookup (any station's output)
         var doorResult = await mediator.Send(
-            new ControlDoorCommand(null, doorCode, userId, false, "0.0.0.0", _mac));
+            new ControlDoorCommand(null, doorCode, userId, false, "0.0.0.0", null));
 
         if (doorResult.Succeeded)
         {
             RenderAndSend("دسترسی مجاز", "✓ خوش آمدید", Color.White);
             await Task.Delay(1000);
             await mediator.Send(
-                new ControlDoorCommand(null, doorCode, userId, true, "0.0.0.0", _mac));
+                new ControlDoorCommand(null, doorCode, userId, true, "0.0.0.0", null));
         }
         else
         {
             RenderAndSend("خطا", doorResult.Message ?? "خطای ناشناخته", Color.White);
+        }
+
+        await Task.Delay(3000);
+        _state = State.Auth;
+        ShowAuthUI();
+    }
+
+    /// <summary>
+    /// Door station: automatically open every output assigned to this station
+    /// that the authenticated user has permission to access.
+    /// No door-code entry required.
+    /// </summary>
+    private async Task RunDoorStationFlow(string userId, string userName)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var mediator  = scope.ServiceProvider.GetRequiredService<IMediator>();
+        var doorRepo  = scope.ServiceProvider.GetRequiredService<IDoorRepository>();
+
+        var allDoors      = await doorRepo.GetAllAsync();
+        var assignedDoors = allDoors.Where(d => d.StationMacAddress == _mac && d.IsEnabled).ToList();
+
+        if (assignedDoors.Count == 0)
+        {
+            RenderAndSend("هیچ خروجی", "به این استیشن اساین نشده", Color.White);
+            await Task.Delay(3000);
+            _state = State.Auth;
+            ShowAuthUI();
+            return;
+        }
+
+        int opened = 0;
+        foreach (var door in assignedDoors)
+        {
+            var result = await mediator.Send(
+                new ControlDoorCommand(door.Id, null, userId, false, "0.0.0.0", _mac));
+            if (result.Succeeded) opened++;
+        }
+
+        if (opened > 0)
+        {
+            RenderAndSend("دسترسی مجاز", $"✓ {opened} خروجی باز شد", Color.White);
+            await Task.Delay(1000);
+            // For toggle outputs, server-side ControlDoor handler manages the lock command.
+            // For momentary outputs, relay auto-off is handled by the ESP timer.
+            // Re-lock toggle outputs:
+            foreach (var door in assignedDoors)
+            {
+                if (!door.IsMomentary)
+                    await mediator.Send(new ControlDoorCommand(door.Id, null, userId, true, "0.0.0.0", _mac));
+            }
+        }
+        else
+        {
+            RenderAndSend("دسترسی رد شد", "مجاز به هیچ خروجی نیستید", Color.White);
         }
 
         await Task.Delay(3000);

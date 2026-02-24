@@ -150,28 +150,30 @@ sessionManager.SetDisplaySender(async (mac, buffer) =>
 // All control messages are P-256 signed with a per-connection seqno to prevent forgery and replay.
 var relayService = app.Services.GetRequiredService<StationRelayService>();
 
-relayService.SetOpenSender(async (mac, i2cAddress, pin, durationMs) =>
+relayService.SetOpenSender(async (mac, i2cAddress, pin, durationMs, isActiveLow) =>
 {
     var connId = connectionManager.GetConnectionId(mac);
     if (connId is null) return;
 
     var seqno   = connectionManager.NextSeqno(connId);
-    var sigData = System.Text.Encoding.UTF8.GetBytes($"OpenDoor|{i2cAddress}|{pin}|{durationMs}|{seqno}");
+    var alBit   = isActiveLow ? 1 : 0;
+    var sigData = System.Text.Encoding.UTF8.GetBytes($"OpenDoor|{i2cAddress}|{pin}|{durationMs}|{alBit}|{seqno}");
     var sigHex  = Convert.ToHexString(keyService.Sign(sigData)).ToLowerInvariant();
 
-    await hubContext.Clients.Client(connId).SendAsync("OpenDoor", i2cAddress, pin, durationMs, seqno, sigHex);
+    await hubContext.Clients.Client(connId).SendAsync("OpenDoor", i2cAddress, pin, durationMs, isActiveLow, seqno, sigHex);
 });
 
-relayService.SetCloseSender(async (mac, i2cAddress, pin) =>
+relayService.SetCloseSender(async (mac, i2cAddress, pin, isActiveLow) =>
 {
     var connId = connectionManager.GetConnectionId(mac);
     if (connId is null) return;
 
     var seqno   = connectionManager.NextSeqno(connId);
-    var sigData = System.Text.Encoding.UTF8.GetBytes($"CloseDoor|{i2cAddress}|{pin}|{seqno}");
+    var alBit   = isActiveLow ? 1 : 0;
+    var sigData = System.Text.Encoding.UTF8.GetBytes($"CloseDoor|{i2cAddress}|{pin}|{alBit}|{seqno}");
     var sigHex  = Convert.ToHexString(keyService.Sign(sigData)).ToLowerInvariant();
 
-    await hubContext.Clients.Client(connId).SendAsync("CloseDoor", i2cAddress, pin, seqno, sigHex);
+    await hubContext.Clients.Client(connId).SendAsync("CloseDoor", i2cAddress, pin, isActiveLow, seqno, sigHex);
 });
 // ──────────────────────────────────────────────────────────────────────────
 

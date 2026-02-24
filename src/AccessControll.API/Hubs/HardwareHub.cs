@@ -1,3 +1,4 @@
+using AccessControll.Domain.Enums;
 using AccessControll.Hardware;
 using AccessControll.Infrastructure.Data;
 using Microsoft.AspNetCore.SignalR;
@@ -84,7 +85,9 @@ public class HardwareHub : Hub
     ///      server itself booted/provisioned the device, it is not allowed to connect until
     ///      it has been explicitly registered (prevents rogue or decommissioned stations).
     /// </summary>
-    public async Task RegisterStation(string macAddress)
+    /// <param name="stationType">Station type reported by the ESP firmware (CFG_STATION_TYPE baked at flash time).
+    /// The server trusts this value and updates the DB so the type always reflects actual hardware.</param>
+    public async Task RegisterStation(string macAddress, int stationType = 0)
     {
         // ── Gate 1: challenge must have been issued for this connection ────────
         if (!_pendingChallenges.TryRemove(Context.ConnectionId, out _))
@@ -114,11 +117,23 @@ public class HardwareHub : Hub
             return;
         }
 
+        // ── Update type from firmware ─────────────────────────────────────────
+        var reportedType = (StationType)stationType;
+        if (station.Type != reportedType)
+        {
+            station.Type = reportedType;
+            await _db.SaveChangesAsync();
+            Console.WriteLine($"[HW] Station {mac} type updated to {reportedType}");
+        }
+
         // ── Accepted ──────────────────────────────────────────────────────────
-        Console.WriteLine($"[HW] Station registered: {mac} — '{station.Name}' (conn={Context.ConnectionId})");
+        Console.WriteLine($"[HW] Station registered: {mac} — '{station.Name}' type={station.Type} (conn={Context.ConnectionId})");
 
         _connectionManager.Register(mac, Context.ConnectionId);
-        _sessionManager.CreateSession(mac);
+
+        // RemoteControl stations have no display/keyboard — no session needed
+        if (station.Type != StationType.RemoteControl)
+            _sessionManager.CreateSession(mac, station.Type);
 
         await _doorHub.Clients.Group("all-doors")
             .SendAsync("StationStatusChanged", mac, true);

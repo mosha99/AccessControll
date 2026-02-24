@@ -141,9 +141,9 @@ public interface IDoorService
     Task<List<DoorDto>> GetAllAsync();
     Task<DoorDto?> GetByIdAsync(Guid id);
     Task<DoorDto?> CreateAsync(string name, int code, string description, string location, string? hardwareId,
-        string? stationMacAddress, string i2cAddress, string i2cPin, int durationMs, bool isMomentary);
+        string? stationMacAddress, string i2cAddress, string i2cPin, int durationMs, bool isMomentary, bool isActiveLow = true);
     Task<DoorDto?> UpdateAsync(Guid id, string name, int code, string description, string location, bool isEnabled,
-        string? hardwareId, string? stationMacAddress, string i2cAddress, string i2cPin, int durationMs, bool isMomentary);
+        string? hardwareId, string? stationMacAddress, string i2cAddress, string i2cPin, int durationMs, bool isMomentary, bool isActiveLow = true);
     Task DeleteAsync(Guid id);
     Task<(bool Success, string Message)> ControlDoorAsync(Guid doorId, bool lockDoor);
     Task<PagedResult<DoorAccessLogDto>> GetLogsAsync(Guid? doorId = null, string? userId = null, DateTime? from = null, DateTime? to = null, int page = 1, int pageSize = 25);
@@ -164,16 +164,16 @@ public class DoorService : IDoorService
         await _http.GetFromJsonAsync<DoorDto>($"api/doors/{id}", JsonOptions.CaseInsensitive);
 
     public async Task<DoorDto?> CreateAsync(string name, int code, string description, string location, string? hardwareId,
-        string? stationMacAddress, string i2cAddress, string i2cPin, int durationMs, bool isMomentary)
+        string? stationMacAddress, string i2cAddress, string i2cPin, int durationMs, bool isMomentary, bool isActiveLow = true)
     {
-        var r = await _http.PostAsJsonAsync("api/doors", new { name, code, description, location, hardwareId, stationMacAddress, i2cAddress, i2cPin, durationMs, isMomentary });
+        var r = await _http.PostAsJsonAsync("api/doors", new { name, code, description, location, hardwareId, stationMacAddress, i2cAddress, i2cPin, durationMs, isMomentary, isActiveLow });
         return r.IsSuccessStatusCode ? await r.Content.ReadFromJsonAsync<DoorDto>(JsonOptions.CaseInsensitive) : null;
     }
 
     public async Task<DoorDto?> UpdateAsync(Guid id, string name, int code, string description, string location, bool isEnabled,
-        string? hardwareId, string? stationMacAddress, string i2cAddress, string i2cPin, int durationMs, bool isMomentary)
+        string? hardwareId, string? stationMacAddress, string i2cAddress, string i2cPin, int durationMs, bool isMomentary, bool isActiveLow = true)
     {
-        var r = await _http.PutAsJsonAsync($"api/doors/{id}", new { id, name, code, description, location, isEnabled, hardwareId, stationMacAddress, i2cAddress, i2cPin, durationMs, isMomentary });
+        var r = await _http.PutAsJsonAsync($"api/doors/{id}", new { id, name, code, description, location, isEnabled, hardwareId, stationMacAddress, i2cAddress, i2cPin, durationMs, isMomentary, isActiveLow });
         return r.IsSuccessStatusCode ? await r.Content.ReadFromJsonAsync<DoorDto>(JsonOptions.CaseInsensitive) : null;
     }
 
@@ -330,7 +330,7 @@ public class RoleService : IRoleService
 public record StationDto(
     Guid Id, string MacAddress, string Name, string? Description,
     bool IsEnabled, DateTime RegisteredAt, DateTime? LastSeen, bool IsConnected,
-    string? LastKnownIp);
+    string? LastKnownIp, int Type = 0);
 
 public record DiscoveredStationDto(string Ip, string Mac, bool IsRegistered);
 
@@ -338,12 +338,12 @@ public interface IStationService
 {
     Task<List<StationDto>> GetAllAsync();
     Task<List<DiscoveredStationDto>> ScanNetworkAsync();
-    Task<(bool Success, string? Error)> RegisterAsync(string macAddress, string name, string? description, string? ip);
+    Task<(bool Success, string? Error)> RegisterAsync(string macAddress, string name, string? description, string? ip, int type = 0);
     Task<bool> ConnectAsync(string mac);
-    Task<bool> UpdateAsync(string mac, string name, string? description, bool isEnabled);
+    Task<bool> UpdateAsync(string mac, string name, string? description, bool isEnabled, int type = 0);
     Task<bool> DeleteAsync(string mac);
     Task<string[]> GetSerialPortsAsync();
-    Task<(bool Success, string? Mac, bool AlreadyRegistered, string? Error, string? FlashOutput)> ProvisionAsync(string portName, string ssid, string password, string name, string? description, bool flashFirst = false, string? sessionId = null);
+    Task<(bool Success, string? Mac, bool AlreadyRegistered, string? Error, string? FlashOutput)> ProvisionAsync(string portName, string ssid, string password, string name, string? description, bool flashFirst = false, string? sessionId = null, int stationType = 0);
 }
 
 public class StationService : IStationService
@@ -362,9 +362,9 @@ public class StationService : IStationService
             : new();
     }
 
-    public async Task<(bool Success, string? Error)> RegisterAsync(string macAddress, string name, string? description, string? ip)
+    public async Task<(bool Success, string? Error)> RegisterAsync(string macAddress, string name, string? description, string? ip, int type = 0)
     {
-        var r = await _http.PostAsJsonAsync("api/stations", new { macAddress, name, description, ip });
+        var r = await _http.PostAsJsonAsync("api/stations", new { macAddress, name, description, ip, type });
         if (r.IsSuccessStatusCode) return (true, null);
         var json = await r.Content.ReadFromJsonAsync<JsonElement>();
         return (false, json.TryGetProperty("message", out var m) ? m.GetString() : "خطا در ثبت دستگاه");
@@ -376,9 +376,9 @@ public class StationService : IStationService
         return r.IsSuccessStatusCode;
     }
 
-    public async Task<bool> UpdateAsync(string mac, string name, string? description, bool isEnabled)
+    public async Task<bool> UpdateAsync(string mac, string name, string? description, bool isEnabled, int type = 0)
     {
-        var r = await _http.PutAsJsonAsync($"api/stations/{mac}", new { name, description, isEnabled });
+        var r = await _http.PutAsJsonAsync($"api/stations/{mac}", new { name, description, isEnabled, type });
         return r.IsSuccessStatusCode;
     }
 
@@ -395,10 +395,10 @@ public class StationService : IStationService
     }
 
     public async Task<(bool Success, string? Mac, bool AlreadyRegistered, string? Error, string? FlashOutput)> ProvisionAsync(
-        string portName, string ssid, string password, string name, string? description, bool flashFirst = false, string? sessionId = null)
+        string portName, string ssid, string password, string name, string? description, bool flashFirst = false, string? sessionId = null, int stationType = 0)
     {
         var r = await _http.PostAsJsonAsync("api/stations/provision",
-            new { portName, ssid, password, name, description, flashFirst, sessionId });
+            new { portName, ssid, password, name, description, flashFirst, sessionId, stationType });
 
         var json = await r.Content.ReadFromJsonAsync<JsonElement>();
 

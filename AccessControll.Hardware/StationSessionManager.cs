@@ -1,3 +1,4 @@
+using AccessControll.Domain.Enums;
 using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -34,7 +35,7 @@ public class StationSessionManager
     public void SetDisplaySender(Func<string, byte[], Task> sender) => _displaySender = sender;
 
     /// <summary>Create (or replace) a session for the given MAC address.</summary>
-    public StationSession CreateSession(string mac)
+    public StationSession CreateSession(string mac, StationType type = StationType.General)
     {
         _sessions.TryRemove(mac, out _);
 
@@ -43,7 +44,7 @@ public class StationSessionManager
         Func<byte[], Task> sendDisplay = buffer =>
             _displaySender != null ? _displaySender(capturedMac, buffer) : Task.CompletedTask;
 
-        var session = new StationSession(mac, _oled, _scopeFactory, sendDisplay);
+        var session = new StationSession(mac, type, _oled, _scopeFactory, sendDisplay);
         _sessions[mac] = session;
         session.Init();
         return session;

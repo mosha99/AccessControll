@@ -12,25 +12,25 @@ namespace AccessControll.Hardware;
 /// </summary>
 public class StationRelayService : IStationRelayService
 {
-    // (stationMac, i2cAddr, pin, durationMs)
-    private Func<string, byte, byte, int, Task>? _openSender;
+    // (stationMac, i2cAddr, pin, durationMs, isActiveLow)
+    private Func<string, byte, byte, int, bool, Task>? _openSender;
 
-    // (stationMac, i2cAddr, pin)
-    private Func<string, byte, byte, Task>? _closeSender;
+    // (stationMac, i2cAddr, pin, isActiveLow)
+    private Func<string, byte, byte, bool, Task>? _closeSender;
 
-    public void SetOpenSender(Func<string, byte, byte, int, Task> sender) => _openSender = sender;
-    public void SetCloseSender(Func<string, byte, byte, Task> sender)    => _closeSender = sender;
+    public void SetOpenSender(Func<string, byte, byte, int, bool, Task> sender) => _openSender = sender;
+    public void SetCloseSender(Func<string, byte, byte, bool, Task> sender)     => _closeSender = sender;
 
-    public async Task OpenDoorAsync(string stationMac, string i2cAddress, string pin, int durationMs)
+    public async Task OpenDoorAsync(string stationMac, string i2cAddress, string pin, int durationMs, bool isActiveLow = true)
     {
         if (_openSender is null) { Console.WriteLine("[Relay] OpenSender not wired"); return; }
-        await _openSender(stationMac, ParseAddr(i2cAddress), ParsePin(pin), durationMs);
+        await _openSender(stationMac, ParseAddr(i2cAddress), ParsePin(pin), durationMs, isActiveLow);
     }
 
-    public async Task CloseDoorAsync(string stationMac, string i2cAddress, string pin)
+    public async Task CloseDoorAsync(string stationMac, string i2cAddress, string pin, bool isActiveLow = true)
     {
         if (_closeSender is null) { Console.WriteLine("[Relay] CloseSender not wired"); return; }
-        await _closeSender(stationMac, ParseAddr(i2cAddress), ParsePin(pin));
+        await _closeSender(stationMac, ParseAddr(i2cAddress), ParsePin(pin), isActiveLow);
     }
 
     // ── Parsing helpers ────────────────────────────────────────────────────────

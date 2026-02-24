@@ -29,10 +29,10 @@ public interface IPhysicalPortService
 public interface IStationRelayService
 {
     /// <summary>Activate the relay. durationMs=0 means stay on (toggle mode).</summary>
-    Task OpenDoorAsync(string stationMac, string i2cAddress, string pin, int durationMs);
+    Task OpenDoorAsync(string stationMac, string i2cAddress, string pin, int durationMs, bool isActiveLow = true);
 
     /// <summary>Deactivate the relay (for toggle-mode outputs).</summary>
-    Task CloseDoorAsync(string stationMac, string i2cAddress, string pin);
+    Task CloseDoorAsync(string stationMac, string i2cAddress, string pin, bool isActiveLow = true);
 }
 
 public interface IUserDoorPermissionRepository

@@ -22,15 +22,21 @@
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 #include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
+#if CFG_STATION_TYPE != 2          // RemoteControl has no display
+  #include <Adafruit_GFX.h>
+  #include <Adafruit_SSD1306.h>
+#endif
 #include <EEPROM.h>
 #include <uECC.h>                         // micro-ecc: P-256 verify
 #include <bearssl/bearssl_hash.h>         // BearSSL SHA-256 (bundled with ESP8266 core)
 #include "config.h"  // Build-time provisioning: CFG_WIFI_SSID, CFG_SERVER_HOST, CFG_SERVER_PORT
 
 // ── Forward declarations ───────────────────────────
-void oledShowStatus(String line1, String line2 = "", String line3 = "");
+#if CFG_STATION_TYPE != 2
+  void oledShowStatus(String line1, String line2 = "", String line3 = "");
+#else
+  inline void oledShowStatus(String, String = "", String = "") {}  // no-op for RemoteControl
+#endif
 
 // ── EEPROM Provisioning ───────────────────────────
 // PROV_MAGIC 0xAE: struct with 64-byte P-256 public key (X‖Y).
@@ -62,7 +68,9 @@ bool   g_wsStarted  = false;
 #define SDA_PIN 0
 #define SCL_PIN 2
 
-// ── OLED ──────────────────────────────────────────
+// ── OLED + Keypad (General / Door stations only) ──
+#if CFG_STATION_TYPE != 2
+
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define OLED_ADDR 0x3C
@@ -125,9 +133,13 @@ bool initKeypad() {
   return Wire.endTransmission() == 0;
 }
 
+#endif  // CFG_STATION_TYPE != 2
+
 // ── Relay (PCF8574T, non-blocking) ────────────────
-uint8_t  g_relayAddr  = 0;
-uint32_t g_relayOffAt = 0;   // 0 = no active relay
+uint8_t  g_relayAddr      = 0;
+uint8_t  g_relayPin       = 0;
+bool     g_relayActiveLow = true;   // tracks polarity for the auto-off timer
+uint32_t g_relayOffAt     = 0;      // 0 = no active relay timer
 
 // ── P-256 auth state ──────────────────────────────
 // Pubkey is loaded from EEPROM in setup() and cached here for event-handler use.
@@ -139,15 +151,15 @@ static bool     g_hasPubKey        = false;
 static uint32_t g_seqnoLast = 0;
 static bool     g_seqnoInit = false;   // false = first message of session, skip >-check
 
-void relayPinOn(uint8_t addr, uint8_t pin) {
+void relayPinOn(uint8_t addr, uint8_t pin, bool activeLow) {
   Wire.beginTransmission(addr);
-  Wire.write(~(1 << pin));   // active-low: pull pin LOW, all others HIGH
+  Wire.write(activeLow ? (uint8_t)(~(1 << pin)) : (uint8_t)(1 << pin));
   Wire.endTransmission();
 }
 
-void relayAllOff(uint8_t addr) {
+void relayAllOff(uint8_t addr, bool activeLow) {
   Wire.beginTransmission(addr);
-  Wire.write(0xFF);           // all HIGH — all relays off
+  Wire.write(activeLow ? (uint8_t)0xFF : (uint8_t)0x00);  // active-low: 0xFF=all off; active-high: 0x00=all off
   Wire.endTransmission();
 }
 
@@ -241,7 +253,9 @@ static bool verifyMsg(const char* sigData, uint32_t seqno, const char* sigHex) {
   return true;
 }
 
-// ── OLED Helpers ──────────────────────────────────
+// ── OLED Helpers + Base64 (General / Door only) ───
+#if CFG_STATION_TYPE != 2
+
 void oledShowStatus(String line1, String line2, String line3) {
   display.clearDisplay();
   display.setTextColor(WHITE);
@@ -258,7 +272,6 @@ void oledRenderBuffer(uint8_t* buf) {
   display.display();
 }
 
-// ── Base64 Decode ─────────────────────────────────
 static const char B64T[] =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -275,6 +288,8 @@ int b64Decode(const char* in, uint8_t* out, int maxOut) {
   }
   return n;
 }
+
+#endif  // CFG_STATION_TYPE != 2
 
 // ── UART Provisioning ─────────────────────────────
 // Expects: PROVISION:{"ssid":"...","password":"...","server":"...","port":N,"pubkey":"128hexchars"}
@@ -343,12 +358,15 @@ void registerStation() {
   StaticJsonDocument<200> doc;
   doc["type"]   = 1;
   doc["target"] = "RegisterStation";
-  doc.createNestedArray("arguments").add(mac);
+  JsonArray args = doc.createNestedArray("arguments");
+  args.add(mac);
+  args.add((int)CFG_STATION_TYPE);   // firmware-baked type: 0=General, 1=Door, 2=RemoteControl
   String msg; serializeJson(doc, msg); msg += (char)0x1E;
   ws.sendTXT(msg);
-  logMessage(">> RegisterStation: " + mac);
+  logMessage(">> RegisterStation: " + mac + " type=" + String(CFG_STATION_TYPE));
 }
 
+#if CFG_STATION_TYPE != 2
 void sendKey(char key) {
   StaticJsonDocument<200> doc;
   doc["type"]   = 1;
@@ -358,6 +376,7 @@ void sendKey(char key) {
   ws.sendTXT(msg);
   logMessage(">> Key sent: " + String(key));
 }
+#endif  // CFG_STATION_TYPE != 2
 
 void handleServerMessage(uint8_t* payload, size_t length) {
   String raw = String((char*)payload);
@@ -369,6 +388,7 @@ void handleServerMessage(uint8_t* payload, size_t length) {
     start = end + 1;
     if (chunk.length() < 2) continue;
 
+#if CFG_STATION_TYPE != 2
     if (chunk.indexOf("\"RenderDisplay\"") > 0) {
       int b64Start = chunk.indexOf("[\"") + 2;
       int b64End   = (b64Start > 1) ? chunk.indexOf('"', b64Start) : -1;
@@ -381,6 +401,7 @@ void handleServerMessage(uint8_t* payload, size_t length) {
       free(buf);
       continue;
     }
+#endif  // CFG_STATION_TYPE != 2
 
     // ── JSON parsing (all non-RenderDisplay messages) ──
     // StaticJsonDocument<768>: must hold AuthChallenge (128-char sigHex) and
@@ -421,51 +442,63 @@ void handleServerMessage(uint8_t* payload, size_t length) {
         logMessage("OK: Server identity verified (P-256) — registering");
         registerStation();
 
+#if CFG_STATION_TYPE != 2
       } else if (strcmp(target, "PowerState") == 0) {
         bool on = doc["arguments"][0];
         Wire.beginTransmission(OLED_ADDR); Wire.write(0x00); Wire.write(on ? 0xAF : 0xAE); Wire.endTransmission();
         logMessage(">> Power: " + String(on ? "ON" : "OFF"));
+#endif  // CFG_STATION_TYPE != 2
 
       } else if (strcmp(target, "OpenDoor") == 0) {
-        uint8_t  addr  = (uint8_t)(int)(doc["arguments"][0] | 0x20);
-        uint8_t  pin   = (uint8_t)(int)(doc["arguments"][1] | 0);
-        int      dur   = doc["arguments"][2] | 5000;
-        uint32_t seq   = (uint32_t)(long)doc["arguments"][3];
-        const char* sh = doc["arguments"][4] | "";
+        uint8_t  addr    = (uint8_t)(int)(doc["arguments"][0] | 0x20);
+        uint8_t  pin     = (uint8_t)(int)(doc["arguments"][1] | 0);
+        int      dur     = doc["arguments"][2] | 5000;
+        bool     actLow  = doc["arguments"][3] | true;
+        uint32_t seq     = (uint32_t)(long)doc["arguments"][4];
+        const char* sh   = doc["arguments"][5] | "";
 
-        // Build sigData exactly as the server did: "OpenDoor|addr|pin|dur|seqno"
-        char sigData[80];
-        snprintf(sigData, sizeof(sigData), "OpenDoor|%d|%d|%d|%lu", (int)addr, (int)pin, dur, (unsigned long)seq);
+        // Build sigData exactly as the server did: "OpenDoor|addr|pin|dur|alBit|seqno"
+        char sigData[96];
+        snprintf(sigData, sizeof(sigData), "OpenDoor|%d|%d|%d|%d|%lu",
+                 (int)addr, (int)pin, dur, actLow ? 1 : 0, (unsigned long)seq);
         if (!verifyMsg(sigData, seq, sh)) {
           logMessage("ERR: OpenDoor rejected (bad sig/replay)");
           continue;
         }
-        g_relayAddr = addr;
-        relayPinOn(addr, pin);
+        g_relayAddr      = addr;
+        g_relayPin       = pin;
+        g_relayActiveLow = actLow;
+        relayPinOn(addr, pin, actLow);
         if (dur > 0) {
           g_relayOffAt = millis() + (uint32_t)dur;
-          logMessage(">> Relay ON addr=0x" + String(addr, HEX) + " pin=" + String(pin) + " dur=" + String(dur) + "ms");
+          logMessage(">> Relay ON addr=0x" + String(addr, HEX) + " pin=" + String(pin)
+                     + " dur=" + String(dur) + "ms al=" + String(actLow));
         } else {
           g_relayOffAt = 0;
-          logMessage(">> Relay ON (toggle) addr=0x" + String(addr, HEX) + " pin=" + String(pin));
+          logMessage(">> Relay ON (toggle) addr=0x" + String(addr, HEX) + " pin=" + String(pin)
+                     + " al=" + String(actLow));
         }
 
       } else if (strcmp(target, "CloseDoor") == 0) {
-        uint8_t  addr  = (uint8_t)(int)(doc["arguments"][0] | 0x20);
-        uint8_t  pin   = (uint8_t)(int)(doc["arguments"][1] | 0);
-        uint32_t seq   = (uint32_t)(long)doc["arguments"][2];
-        const char* sh = doc["arguments"][3] | "";
+        uint8_t  addr    = (uint8_t)(int)(doc["arguments"][0] | 0x20);
+        uint8_t  pin     = (uint8_t)(int)(doc["arguments"][1] | 0);
+        bool     actLow  = doc["arguments"][2] | true;
+        uint32_t seq     = (uint32_t)(long)doc["arguments"][3];
+        const char* sh   = doc["arguments"][4] | "";
 
-        char sigData[64];
-        snprintf(sigData, sizeof(sigData), "CloseDoor|%d|%d|%lu", (int)addr, (int)pin, (unsigned long)seq);
+        // Build sigData exactly as the server did: "CloseDoor|addr|pin|alBit|seqno"
+        char sigData[80];
+        snprintf(sigData, sizeof(sigData), "CloseDoor|%d|%d|%d|%lu",
+                 (int)addr, (int)pin, actLow ? 1 : 0, (unsigned long)seq);
         if (!verifyMsg(sigData, seq, sh)) {
           logMessage("ERR: CloseDoor rejected (bad sig/replay)");
           continue;
         }
-        g_relayAddr  = addr;
-        g_relayOffAt = 0;
-        relayAllOff(addr);
-        logMessage(">> Relay OFF (toggle close) addr=0x" + String(addr, HEX));
+        g_relayAddr      = addr;
+        g_relayActiveLow = actLow;
+        g_relayOffAt     = 0;
+        relayAllOff(addr, actLow);
+        logMessage(">> Relay OFF (toggle close) addr=0x" + String(addr, HEX) + " al=" + String(actLow));
       }
     }
   }
@@ -490,6 +523,7 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
       _fragBuf += String((char*)payload); break;
     case WStype_FRAGMENT_FIN:
       _fragBuf += String((char*)payload);
+#if CFG_STATION_TYPE != 2
       if (_fragBuf.indexOf("\"RenderDisplay\"") > 0) {
         int b64S = _fragBuf.indexOf("[\"") + 2;
         int b64E = (b64S > 1) ? _fragBuf.indexOf('"', b64S) : -1;
@@ -497,7 +531,9 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
           uint8_t* buf = (uint8_t*)malloc(1024);
           if (buf) { _fragBuf[b64E] = '\0'; int n = b64Decode(_fragBuf.c_str() + b64S, buf, 1024); if (n == 1024) oledRenderBuffer(buf); free(buf); }
         }
-      } else { handleServerMessage((uint8_t*)_fragBuf.c_str(), _fragBuf.length()); }
+      } else
+#endif
+      { handleServerMessage((uint8_t*)_fragBuf.c_str(), _fragBuf.length()); }
       _fragBuf = ""; break;
     case WStype_ERROR: logMessage("WS: Error"); break;
     default: logMessage("WS: evt=" + String((int)type)); break;
@@ -513,12 +549,16 @@ void setup() {
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(400000);
 
+#if CFG_STATION_TYPE != 2
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) { Serial.println("ERR: OLED"); for(;;); }
   oledShowStatus("Booting...");
+#endif
   logMessage("--- Boot ---");
 
+#if CFG_STATION_TYPE != 2
   if (initKeypad()) logMessage("OK: Keypad at 0x" + String(KEYPAD_ADDR, HEX));
   else              logMessage("ERR: Keypad not found at 0x" + String(KEYPAD_ADDR, HEX));
+#endif
 
   EEPROM.begin(EEPROM_SIZE);
   ProvData pdata;
@@ -600,11 +640,13 @@ void setup() {
   String ip = WiFi.localIP().toString();
   logMessage("OK: WiFi " + ip);
 
+#if CFG_STATION_TYPE != 2
   display.clearDisplay(); display.setTextColor(WHITE); display.setTextSize(1);
   display.setCursor(0, 0); display.println("Ready! Log:");
   display.setTextSize(2); display.println(ip);
   display.setTextSize(1); display.println(""); display.println("Waiting for server...");
   display.display();
+#endif
 
   logServer.on("/", handleRoot);
   logServer.on("/clear", handleClear);
@@ -665,17 +707,19 @@ void loop() {
 
   // Non-blocking relay auto-off
   if (g_relayOffAt != 0 && millis() >= g_relayOffAt) {
-    relayAllOff(g_relayAddr);
+    relayAllOff(g_relayAddr, g_relayActiveLow);
     g_relayOffAt = 0;
-    logMessage(">> Relay OFF");
+    logMessage(">> Relay OFF (auto)");
   }
 
+#if CFG_STATION_TYPE != 2
   char key = getKeyFromPCF8574();
   if (key != 0) {
     logMessage("Key: " + String(key));
     if (wsConnected) sendKey(key);
     else             logMessage("WARN: Not connected");
   }
+#endif
 
   if (WiFi.status() != WL_CONNECTED) {
     logMessage("WiFi lost, reconnecting...");

@@ -73,6 +73,7 @@
                         <th>نام</th>
                         <th>مک آدرس</th>
                         <th>آخرین IP</th>
+                        <th>نوع</th>
                         <th>توضیحات</th>
                         <th>اتصال</th>
                         <th>وضعیت</th>
@@ -87,6 +88,9 @@
                             <td><strong>@s.Name</strong></td>
                             <td dir="ltr">@s.MacAddress</td>
                             <td dir="ltr">@(s.LastKnownIp ?? "—")</td>
+                            <td>
+                                <span class="badge @TypeBadgeClass(s.Type)">@TypeLabel(s.Type)</span>
+                            </td>
                             <td>@(s.Description ?? "—")</td>
                             <td>
                                 <span class="badge @(s.IsConnected ? "badge-green" : "badge-gray")">
@@ -119,15 +123,12 @@
 @if (_showProvModal)
 {
     <div class="modal-overlay" @onclick="CloseModals">
-        <div class="modal" @onclick:stopPropagation="true">
+        <div class="modal modal-wide" @onclick:stopPropagation="true">
             <div class="modal-header">
-                <h3>پروویژن دستگاه جدید از طریق UART</h3>
+                <h3>🔌 پروویژن دستگاه جدید</h3>
                 <button class="modal-close" @onclick="CloseModals">✕</button>
             </div>
-            <div class="modal-body">
-                <div class="prov-hint">
-                    دستگاه ESP8266 را از طریق USB-to-TTL (ویندوز) یا GPIO UART (OrangePi) وصل کنید، سپس پورت و اطلاعات WiFi را وارد کنید.
-                </div>
+            <div class="modal-body modal-body-scroll">
 
                 <div class="form-row">
                     <label>پورت سریال</label>
@@ -145,22 +146,33 @@
                     }
                 </div>
 
-                <div class="form-row">
-                    <label>WiFi SSID</label>
-                    <input type="text" @bind="_provForm.Ssid" class="form-input" dir="ltr" placeholder="نام شبکه WiFi" />
+                <div class="form-grid-2">
+                    <div class="form-row">
+                        <label>WiFi SSID</label>
+                        <input type="text" @bind="_provForm.Ssid" class="form-input" dir="ltr" placeholder="نام شبکه" />
+                    </div>
+                    <div class="form-row">
+                        <label>WiFi Password</label>
+                        <div style="display:flex;gap:6px;align-items:center;">
+                            <input type="@(_showProvPass ? "text" : "password")" @bind="_provForm.Password" class="form-input" dir="ltr" placeholder="رمز WiFi" style="flex:1;" />
+                            <button class="btn-toggle-pass" @onclick="@(() => _showProvPass = !_showProvPass)">@(_showProvPass ? "🙈" : "👁️")</button>
+                        </div>
+                    </div>
                 </div>
 
-                <div class="form-row">
-                    <label>WiFi Password</label>
-                    <input type="@(_showProvPass ? "text" : "password")" @bind="_provForm.Password" class="form-input" dir="ltr" placeholder="رمز WiFi" />
-                    <button class="btn-toggle-pass" @onclick="@(() => _showProvPass = !_showProvPass)">
-                        @(_showProvPass ? "پنهان" : "نمایش")
-                    </button>
-                </div>
-
-                <div class="form-row">
-                    <label>نام دستگاه</label>
-                    <input type="text" @bind="_provForm.Name" class="form-input" placeholder="مثلاً: ایستگاه ورودی اصلی" />
+                <div class="form-grid-2">
+                    <div class="form-row">
+                        <label>نام دستگاه</label>
+                        <input type="text" @bind="_provForm.Name" class="form-input" placeholder="مثلاً: ورودی اصلی" />
+                    </div>
+                    <div class="form-row">
+                        <label>نوع <span class="label-hint">(در firmware بیک می‌شود)</span></label>
+                        <select @bind="_provForm.StationType" class="form-input">
+                            <option value="0">🖥️ جنرال</option>
+                            <option value="1">🚪 در</option>
+                            <option value="2">📡 ریموت کنترل</option>
+                        </select>
+                    </div>
                 </div>
 
                 <div class="form-row">
@@ -173,10 +185,6 @@
                         <input type="checkbox" @bind="_provForm.FlashFirst" />
                         <span>فلش firmware قبل از پروویژن (نیاز به arduino-cli)</span>
                     </label>
-                    <div class="prov-hint">
-                        اگر این گزینه فعال باشد، کد C++ به‌صورت خودکار کامپایل و روی ESP آپلود می‌شود.
-                        در صورت نبود arduino-cli پیام خطا نمایش داده خواهد شد.
-                    </div>
                 </div>
 
                 @if (!string.IsNullOrEmpty(_provResult))
@@ -232,6 +240,14 @@
                     <input type="text" @bind="_regForm.Name" class="form-input" placeholder="مثلاً: ایستگاه ورودی اصلی" />
                 </div>
                 <div class="form-row">
+                    <label>نوع استیشن</label>
+                    <select @bind="_regForm.Type" class="form-input">
+                        <option value="0">🖥️ جنرال — کیبورد و نمایشگر (کد خروجی جهانی)</option>
+                        <option value="1">🚪 در — کیبورد و نمایشگر (باز کردن خودکار)</option>
+                        <option value="2">📡 ریموت کنترل — بدون LCD/کیبورد</option>
+                    </select>
+                </div>
+                <div class="form-row">
                     <label>توضیحات (اختیاری)</label>
                     <input type="text" @bind="_regForm.Description" class="form-input" placeholder="توضیحات" />
                 </div>
@@ -267,6 +283,14 @@
                 <div class="form-row">
                     <label>توضیحات (اختیاری)</label>
                     <input type="text" @bind="_editForm.Description" class="form-input" />
+                </div>
+                <div class="form-row">
+                    <label>نوع استیشن</label>
+                    <select @bind="_editForm.Type" class="form-input">
+                        <option value="0">🖥️ جنرال — کیبورد و نمایشگر (کد خروجی جهانی)</option>
+                        <option value="1">🚪 در — کیبورد و نمایشگر (باز کردن خودکار)</option>
+                        <option value="2">📡 ریموت کنترل — بدون LCD/کیبورد</option>
+                    </select>
                 </div>
                 <div class="form-row">
                     <label>وضعیت</label>
@@ -370,12 +394,11 @@
     private async Task ConnectStation(string mac)
     {
         var ok = await StationService.ConnectAsync(mac);
-        _message = ok ? "دستور اتصال ارسال شد" : "دستگاه پاسخ نداد";
+        _message = ok ? "در انتظار اتصال خودکار دستگاه..." : "خطا در ارتباط با سرور";
         _msgSuccess = ok;
         StateHasChanged();
         await Task.Delay(3000);
         _message = "";
-        await LoadStations();
         StateHasChanged();
     }
 
@@ -424,7 +447,7 @@
 
         var (ok, mac, alreadyReg, err, flashOut) = await StationService.ProvisionAsync(
             _provForm.PortName, _provForm.Ssid, _provForm.Password,
-            _provForm.Name, _provForm.Description, _provForm.FlashFirst, _provSessionId);
+            _provForm.Name, _provForm.Description, _provForm.FlashFirst, _provSessionId, _provForm.StationType);
 
         // Cleanup SignalR subscription
         HubService.OnFlashLog -= AppendFlashLine;
@@ -476,12 +499,12 @@
         }
 
         _saving = true;
-        var (ok, err) = await StationService.RegisterAsync(_regForm.MacAddress, _regForm.Name, _regForm.Description, _regForm.Ip);
+        var (ok, err) = await StationService.RegisterAsync(_regForm.MacAddress, _regForm.Name, _regForm.Description, _regForm.Ip, _regForm.Type);
         _saving = false;
 
         if (ok)
         {
-            _message = "دستگاه ثبت شد و دستور اتصال ارسال شد";
+            _message = "دستگاه ثبت شد — در انتظار اتصال خودکار دستگاه...";
             _msgSuccess = true;
             CloseModals();
             await LoadStations();
@@ -497,7 +520,7 @@
     private void OpenEditModal(StationDto station)
     {
         _editTarget = station;
-        _editForm = new EditForm { Name = station.Name, Description = station.Description, IsEnabled = station.IsEnabled };
+        _editForm = new EditForm { Name = station.Name, Description = station.Description, IsEnabled = station.IsEnabled, Type = station.Type };
         _showEditModal = true;
     }
 
@@ -505,7 +528,7 @@
     {
         if (_editTarget == null) return;
         _saving = true;
-        var ok = await StationService.UpdateAsync(_editTarget.MacAddress, _editForm.Name, _editForm.Description, _editForm.IsEnabled);
+        var ok = await StationService.UpdateAsync(_editTarget.MacAddress, _editForm.Name, _editForm.Description, _editForm.IsEnabled, _editForm.Type);
         _saving = false;
 
         if (ok)
@@ -554,6 +577,7 @@
         public string Name { get; set; } = "";
         public string? Description { get; set; }
         public bool FlashFirst { get; set; } = true;
+        public int StationType { get; set; } = 0;
     }
 
     private class RegForm
@@ -562,6 +586,7 @@
         public string Ip { get; set; } = "";
         public string Name { get; set; } = "";
         public string? Description { get; set; }
+        public int Type { get; set; } = 0;
     }
 
     private class EditForm
@@ -569,7 +594,22 @@
         public string Name { get; set; } = "";
         public string? Description { get; set; }
         public bool IsEnabled { get; set; } = true;
+        public int Type { get; set; } = 0;
     }
+
+    private static string TypeLabel(int t) => t switch
+    {
+        1 => "در",
+        2 => "ریموت",
+        _ => "جنرال"
+    };
+
+    private static string TypeBadgeClass(int t) => t switch
+    {
+        1 => "badge-purple",
+        2 => "badge-orange",
+        _ => "badge-blue"
+    };
 }
 
 <style>
@@ -595,6 +635,8 @@
     .badge-green { background: #d4edda; color: #1a7a3c; }
     .badge-blue { background: #dbeafe; color: #1e40af; }
     .badge-gray { background: #f0f0f0; color: #666; }
+    .badge-purple { background: #ede9fe; color: #6d28d9; }
+    .badge-orange { background: #fef3c7; color: #92400e; }
 
     .empty-state { padding: 32px; text-align: center; color: #888; font-size: 14px; background: #f9fafb; border-radius: 10px; }
 
@@ -609,16 +651,20 @@
     .btn-secondary { background: #f0f0f0; color: #333; padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
     .btn-sm { padding: 6px 14px; font-size: 13px; }
 
-    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; backdrop-filter: blur(2px); }
-    .modal { background: white; border-radius: 16px; width: 460px; max-width: 95vw; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
-    .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 20px 24px; border-bottom: 1px solid #eee; }
-    .modal-header h3 { font-size: 18px; font-weight: 600; }
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; backdrop-filter: blur(2px); padding: 16px; }
+    .modal { background: white; border-radius: 16px; width: 460px; max-width: 100%; max-height: 90vh; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+    .modal-wide { width: 580px; }
+    .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 24px; border-bottom: 1px solid #eee; flex-shrink: 0; }
+    .modal-header h3 { font-size: 17px; font-weight: 600; }
     .modal-close { background: none; border: none; font-size: 18px; cursor: pointer; color: #888; }
-    .modal-body { padding: 24px; display: flex; flex-direction: column; gap: 16px; }
-    .modal-footer { display: flex; gap: 10px; padding: 16px 24px; border-top: 1px solid #eee; }
-    .form-row { display: flex; flex-direction: column; gap: 6px; }
+    .modal-body { padding: 20px 24px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
+    .modal-body-scroll { overflow-y: auto; }
+    .modal-footer { display: flex; gap: 10px; padding: 14px 24px; border-top: 1px solid #eee; flex-shrink: 0; }
+    .form-row { display: flex; flex-direction: column; gap: 5px; }
     .form-row label { font-size: 13px; font-weight: 500; }
-    .form-input { padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px; outline: none; width: 100%; box-sizing: border-box; }
+    .form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .label-hint { font-weight: 400; color: #888; font-size: 11px; }
+    .form-input { padding: 9px 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px; outline: none; width: 100%; box-sizing: border-box; }
     .form-input:focus { border-color: #0f3460; }
     .form-input[readonly] { background: #f5f5f5; color: #666; }
 

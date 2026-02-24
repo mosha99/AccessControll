@@ -54,14 +54,26 @@
                 </div>
                 <div class="door-footer">
                     <div class="control-buttons">
-                        <button class="btn-open" disabled="@(!door.IsEnabled || !door.IsLocked)"
-                                @onclick="@(() => ControlDoor(door.Id, false))">
-                            🔓 باز
-                        </button>
-                        <button class="btn-lock" disabled="@(!door.IsEnabled || door.IsLocked)"
-                                @onclick="@(() => ControlDoor(door.Id, true))">
-                            🔒 قفل
-                        </button>
+                        @if (door.IsMomentary)
+                        {
+                            <!-- Momentary output: single Pulse button — prevents accidental "leave on" -->
+                            <button class="btn-open" disabled="@(!door.IsEnabled)"
+                                    @onclick="@(() => ControlDoor(door.Id, false))">
+                                ⚡ پالس
+                            </button>
+                        }
+                        else
+                        {
+                            <!-- Toggle (latching) output: explicit Open + Close -->
+                            <button class="btn-open" disabled="@(!door.IsEnabled || !door.IsLocked)"
+                                    @onclick="@(() => ControlDoor(door.Id, false))">
+                                🔓 باز
+                            </button>
+                            <button class="btn-lock" disabled="@(!door.IsEnabled || door.IsLocked)"
+                                    @onclick="@(() => ControlDoor(door.Id, true))">
+                                🔒 قفل
+                            </button>
+                        }
                     </div>
                     <div class="admin-actions">
                         <AuthorizeView Roles="Admin,DoorManager">
@@ -145,6 +157,12 @@
                         <input type="number" @bind="_form.DurationMs" class="form-input" min="100" step="500" dir="ltr" />
                     </div>
                 }
+                <div class="form-row">
+                    <label class="check-label" style="gap:12px">
+                        <input type="checkbox" @bind="_form.IsActiveLow" style="width:16px;height:16px;accent-color:#0f3460" />
+                        <span>رله اکتیو-لو (پین LOW = روشن) — تیک نزنید اگر رله‌تان اکتیو-های است</span>
+                    </label>
+                </div>
                 @if (_editingDoor != null)
                 {
                     <div class="form-row">
@@ -336,7 +354,8 @@
             Name = door.Name, Code = door.Code, Description = door.Description,
             Location = door.Location, HardwareId = door.HardwareId, IsEnabled = door.IsEnabled,
             StationMacAddress = door.StationMacAddress, I2cAddress = door.I2cAddress,
-            I2cPin = door.I2cPin, DurationMs = door.DurationMs, IsMomentary = door.IsMomentary
+            I2cPin = door.I2cPin, DurationMs = door.DurationMs, IsMomentary = door.IsMomentary,
+            IsActiveLow = door.IsActiveLow
         };
         _showModal = true;
     }
@@ -347,10 +366,10 @@
         var mac = string.IsNullOrWhiteSpace(_form.StationMacAddress) ? null : _form.StationMacAddress;
         if (_editingDoor == null)
             await DoorService.CreateAsync(_form.Name, _form.Code, _form.Description, _form.Location, _form.HardwareId,
-                mac, _form.I2cAddress, _form.I2cPin, _form.DurationMs, _form.IsMomentary);
+                mac, _form.I2cAddress, _form.I2cPin, _form.DurationMs, _form.IsMomentary, _form.IsActiveLow);
         else
             await DoorService.UpdateAsync(_editingDoor.Id, _form.Name, _form.Code, _form.Description, _form.Location, _form.IsEnabled,
-                _form.HardwareId, mac, _form.I2cAddress, _form.I2cPin, _form.DurationMs, _form.IsMomentary);
+                _form.HardwareId, mac, _form.I2cAddress, _form.I2cPin, _form.DurationMs, _form.IsMomentary, _form.IsActiveLow);
         CloseModal();
         await LoadDoors();
         _saving = false;
@@ -430,6 +449,7 @@
         public string I2cPin { get; set; } = "0";
         public int DurationMs { get; set; } = 5000;
         public bool IsMomentary { get; set; } = true;
+        public bool IsActiveLow { get; set; } = true;
     }
 
     private class GrantForm

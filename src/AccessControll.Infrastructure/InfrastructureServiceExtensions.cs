@@ -60,6 +60,20 @@ public static class InfrastructureServiceExtensions
                 ValidateLifetime = true,
                 ClockSkew = TimeSpan.Zero
             };
+            // SignalR WebSocket: token از query string خونده میشه
+            options.Events = new JwtBearerEvents
+            {
+                OnMessageReceived = context =>
+                {
+                    var token = context.Request.Query["access_token"];
+                    if (!string.IsNullOrEmpty(token) &&
+                        context.Request.Path.StartsWithSegments("/hubs"))
+                    {
+                        context.Token = token;
+                    }
+                    return Task.CompletedTask;
+                }
+            };
         });
 
         // OpenIddict

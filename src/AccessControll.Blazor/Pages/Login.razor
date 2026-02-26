@@ -113,6 +113,12 @@
     private bool _loading = false;
     private string _error = "";
 
+    protected override async Task OnInitializedAsync()
+    {
+        if (await AuthService.IsSetupRequiredAsync())
+            Nav.NavigateTo("/setup");
+    }
+
     private void SwitchMode(LoginMode mode)
     {
         _mode = mode;

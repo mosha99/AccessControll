@@ -137,9 +137,9 @@ bool initKeypad() {
 
 // ── Relay (PCF8574T, non-blocking) ────────────────
 uint8_t  g_relayAddr      = 0;
-uint8_t  g_relayPin       = 0;
-bool     g_relayActiveLow = true;   // tracks polarity for the auto-off timer
-uint32_t g_relayOffAt     = 0;      // 0 = no active relay timer
+bool     g_relayActiveLow = true;
+uint8_t  g_relayState     = 0;         // bit N = relay pin N is logically ON
+uint32_t g_relayOffAt[8]  = {};        // per-pin auto-off timestamp (0 = no timer)
 
 // ── P-256 auth state ──────────────────────────────
 // Pubkey is loaded from EEPROM in setup() and cached here for event-handler use.
@@ -151,15 +151,17 @@ static bool     g_hasPubKey        = false;
 static uint32_t g_seqnoLast = 0;
 static bool     g_seqnoInit = false;   // false = first message of session, skip >-check
 
-void relayPinOn(uint8_t addr, uint8_t pin, bool activeLow) {
+// Write the full logical state byte to the PCF8574.
+// logicalState: bit N = relay N is energized (regardless of board polarity).
+void writeRelayState(uint8_t addr, uint8_t logicalState, bool activeLow) {
   Wire.beginTransmission(addr);
-  Wire.write(activeLow ? (uint8_t)(~(1 << pin)) : (uint8_t)(1 << pin));
+  Wire.write(activeLow ? (uint8_t)(~logicalState) : logicalState);
   Wire.endTransmission();
 }
 
 void relayAllOff(uint8_t addr, bool activeLow) {
   Wire.beginTransmission(addr);
-  Wire.write(activeLow ? (uint8_t)0xFF : (uint8_t)0x00);  // active-low: 0xFF=all off; active-high: 0x00=all off
+  Wire.write(activeLow ? (uint8_t)0xFF : (uint8_t)0x00);
   Wire.endTransmission();
 }
 
@@ -466,16 +468,16 @@ void handleServerMessage(uint8_t* payload, size_t length) {
           continue;
         }
         g_relayAddr      = addr;
-        g_relayPin       = pin;
         g_relayActiveLow = actLow;
-        relayPinOn(addr, pin, actLow);
+        g_relayState    |= (1 << pin);          // set this pin, keep others unchanged
+        writeRelayState(addr, g_relayState, actLow);
         if (dur > 0) {
-          g_relayOffAt = millis() + (uint32_t)dur;
+          g_relayOffAt[pin] = millis() + (uint32_t)dur;
           logMessage(">> Relay ON addr=0x" + String(addr, HEX) + " pin=" + String(pin)
                      + " dur=" + String(dur) + "ms al=" + String(actLow));
         } else {
-          g_relayOffAt = 0;
-          logMessage(">> Relay ON (toggle) addr=0x" + String(addr, HEX) + " pin=" + String(pin)
+          g_relayOffAt[pin] = 0;               // hold until CloseDoor
+          logMessage(">> Relay ON (hold) addr=0x" + String(addr, HEX) + " pin=" + String(pin)
                      + " al=" + String(actLow));
         }
 
@@ -494,11 +496,12 @@ void handleServerMessage(uint8_t* payload, size_t length) {
           logMessage("ERR: CloseDoor rejected (bad sig/replay)");
           continue;
         }
-        g_relayAddr      = addr;
-        g_relayActiveLow = actLow;
-        g_relayOffAt     = 0;
-        relayAllOff(addr, actLow);
-        logMessage(">> Relay OFF (toggle close) addr=0x" + String(addr, HEX) + " al=" + String(actLow));
+        g_relayAddr       = addr;
+        g_relayActiveLow  = actLow;
+        g_relayState     &= ~(uint8_t)(1 << pin);   // clear only this pin
+        g_relayOffAt[pin] = 0;
+        writeRelayState(addr, g_relayState, actLow);
+        logMessage(">> Relay OFF pin=" + String(pin) + " addr=0x" + String(addr, HEX) + " al=" + String(actLow));
       }
     }
   }
@@ -514,6 +517,11 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
     case WStype_DISCONNECTED:
       wsConnected = false; _fragBuf = "";
       g_seqnoInit = false; g_seqnoLast = 0;   // reset anti-replay counter for next session
+      if (g_relayAddr != 0) {                  // safety: turn all relays off on disconnect
+        g_relayState = 0;
+        memset(g_relayOffAt, 0, sizeof(g_relayOffAt));
+        relayAllOff(g_relayAddr, g_relayActiveLow);
+      }
       logMessage("WS: Disconnected"); oledShowStatus("Disconnected", "Waiting server..."); break;
     case WStype_TEXT:
       handleServerMessage(payload, length); break;
@@ -599,6 +607,18 @@ void setup() {
       EEPROM.put(0, pdata);
       EEPROM.commit();
       logMessage("Key: P-256 pubkey updated from config.h (key rotation)");
+    }
+  }
+  // ── Server rotation: update EEPROM server/port if config.h has different values
+  // Runs even when EEPROM is already provisioned — allows server address change
+  // after deploy without losing WiFi credentials or bumping PROV_MAGIC.
+  if (pdata.magic == PROV_MAGIC && strlen(CFG_SERVER_HOST) > 0) {
+    if (strcmp(pdata.server, CFG_SERVER_HOST) != 0 || pdata.port != (uint16_t)CFG_SERVER_PORT) {
+      strncpy(pdata.server, CFG_SERVER_HOST, sizeof(pdata.server) - 1);
+      pdata.port = (uint16_t)CFG_SERVER_PORT;
+      EEPROM.put(0, pdata);
+      EEPROM.commit();
+      logMessage("Server: address updated from config.h (server rotation)");
     }
   }
   // ─────────────────────────────────────────────────────────────────────────
@@ -705,12 +725,18 @@ void loop() {
   if (g_wsStarted) ws.loop();
   logServer.handleClient();
 
-  // Non-blocking relay auto-off
-  if (g_relayOffAt != 0 && millis() >= g_relayOffAt) {
-    relayAllOff(g_relayAddr, g_relayActiveLow);
-    g_relayOffAt = 0;
-    logMessage(">> Relay OFF (auto)");
+  // Non-blocking per-pin relay auto-off
+  bool _relayChanged = false;
+  for (int i = 0; i < 8; i++) {
+    if (g_relayOffAt[i] != 0 && millis() >= g_relayOffAt[i]) {
+      g_relayState    &= ~(uint8_t)(1 << i);
+      g_relayOffAt[i]  = 0;
+      _relayChanged    = true;
+      logMessage(">> Relay OFF (auto) pin=" + String(i));
+    }
   }
+  if (_relayChanged && g_relayAddr != 0)
+    writeRelayState(g_relayAddr, g_relayState, g_relayActiveLow);
 
 #if CFG_STATION_TYPE != 2
   char key = getKeyFromPCF8574();

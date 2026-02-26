@@ -15,3 +15,5 @@ public record TwoFactorSetupResponse(string SecretKey, string QrCodeUri);
 public record VerifyTwoFactorRequest(string Code);
 
 public record ChangePasswordRequest(string CurrentPassword, string NewPassword);
+
+public record SetupRequest(string FullName, string Email, string Password);

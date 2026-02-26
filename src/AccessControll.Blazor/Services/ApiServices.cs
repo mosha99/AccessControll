@@ -26,6 +26,8 @@ public interface IAuthService
     Task<LoginResponse> LoginAsync(string email, string password, string? twoFactorCode = null);
     Task<LoginResponse> Login2FAAsync(string totpCode);
     Task LogoutAsync();
+    Task<bool> IsSetupRequiredAsync();
+    Task<LoginResponse> SetupAsync(string fullName, string email, string password);
 }
 
 public class AuthService : IAuthService
@@ -73,6 +75,33 @@ public class AuthService : IAuthService
     {
         try { await _http.PostAsync("api/auth/logout", null); } catch { }
         await _authState.NotifyLogout();
+    }
+
+    public async Task<bool> IsSetupRequiredAsync()
+    {
+        try
+        {
+            var json = await _http.GetFromJsonAsync<JsonElement>("api/auth/setup-required");
+            return json.TryGetProperty("required", out var r) && r.GetBoolean();
+        }
+        catch { return false; }
+    }
+
+    public async Task<LoginResponse> SetupAsync(string fullName, string email, string password)
+    {
+        var response = await _http.PostAsJsonAsync("api/auth/setup", new SetupRequest(fullName, email, password));
+        if (response.IsSuccessStatusCode)
+        {
+            var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+            if (json.TryGetProperty("token", out var t) && t.GetString() is string token)
+            {
+                await _authState.NotifyLogin(token);
+                return new LoginResponse(true, token);
+            }
+            return new LoginResponse(true);
+        }
+        var err = await response.Content.ReadFromJsonAsync<JsonElement>();
+        return new LoginResponse(false, Error: err.TryGetProperty("message", out var m) ? m.GetString() : "خطا در ثبت‌نام");
     }
 }
 
@@ -343,7 +372,7 @@ public interface IStationService
     Task<bool> UpdateAsync(string mac, string name, string? description, bool isEnabled, int type = 0);
     Task<bool> DeleteAsync(string mac);
     Task<string[]> GetSerialPortsAsync();
-    Task<(bool Success, string? Mac, bool AlreadyRegistered, string? Error, string? FlashOutput)> ProvisionAsync(string portName, string ssid, string password, string name, string? description, bool flashFirst = false, string? sessionId = null, int stationType = 0);
+    Task<(bool Success, string? Mac, bool AlreadyRegistered, string? Error, string? FlashOutput)> ProvisionAsync(string portName, string ssid, string password, string name, string? description, bool flashFirst = false, string? sessionId = null, int stationType = 0, string? serverHost = null, int? serverPort = null);
 }
 
 public class StationService : IStationService
@@ -395,10 +424,10 @@ public class StationService : IStationService
     }
 
     public async Task<(bool Success, string? Mac, bool AlreadyRegistered, string? Error, string? FlashOutput)> ProvisionAsync(
-        string portName, string ssid, string password, string name, string? description, bool flashFirst = false, string? sessionId = null, int stationType = 0)
+        string portName, string ssid, string password, string name, string? description, bool flashFirst = false, string? sessionId = null, int stationType = 0, string? serverHost = null, int? serverPort = null)
     {
         var r = await _http.PostAsJsonAsync("api/stations/provision",
-            new { portName, ssid, password, name, description, flashFirst, sessionId, stationType });
+            new { portName, ssid, password, name, description, flashFirst, sessionId, stationType, serverHost, serverPort });
 
         var json = await r.Content.ReadFromJsonAsync<JsonElement>();
 

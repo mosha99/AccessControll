@@ -5,6 +5,7 @@
 @implements IAsyncDisposable
 @inject IStationService StationService
 @inject DoorHubService HubService
+@inject NavigationManager Nav
 
 <PageTitle>مدیریت ایستگاه‌ها — AccessControll</PageTitle>
 
@@ -129,6 +130,11 @@
                 <button class="modal-close" @onclick="CloseModals">✕</button>
             </div>
             <div class="modal-body modal-body-scroll">
+
+                <div class="form-row">
+                    <label>آدرس سرور <span class="label-hint">(host:port که ESP وصل میشه)</span></label>
+                    <input type="text" @bind="_provForm.ServerAddress" class="form-input" dir="ltr" placeholder="مثلاً 192.168.1.100:80" />
+                </div>
 
                 <div class="form-row">
                     <label>پورت سریال</label>
@@ -404,7 +410,9 @@
 
     private async Task OpenProvModal()
     {
-        _provForm = new ProvForm();
+        var uri = new Uri(Nav.BaseUri);
+        var defaultPort = uri.Port is 80 or 443 or -1 ? (uri.Port == -1 ? 80 : uri.Port) : uri.Port;
+        _provForm = new ProvForm { ServerAddress = $"{uri.Host}:{defaultPort}" };
         _provResult = "";
         _flashOutput = null;
         _liveFlashLines = new();
@@ -445,9 +453,18 @@
         HubService.OnFlashLog += AppendFlashLine;
         await HubService.JoinProvisionSessionAsync(_provSessionId);
 
+        // parse ServerAddress → host + port
+        string? sHost = null; int? sPort = null;
+        if (!string.IsNullOrWhiteSpace(_provForm.ServerAddress))
+        {
+            var parts = _provForm.ServerAddress.Split(':');
+            sHost = parts[0].Trim();
+            if (parts.Length > 1 && int.TryParse(parts[1].Trim(), out var sp)) sPort = sp;
+        }
+
         var (ok, mac, alreadyReg, err, flashOut) = await StationService.ProvisionAsync(
             _provForm.PortName, _provForm.Ssid, _provForm.Password,
-            _provForm.Name, _provForm.Description, _provForm.FlashFirst, _provSessionId, _provForm.StationType);
+            _provForm.Name, _provForm.Description, _provForm.FlashFirst, _provSessionId, _provForm.StationType, sHost, sPort);
 
         // Cleanup SignalR subscription
         HubService.OnFlashLog -= AppendFlashLine;
@@ -571,6 +588,7 @@
 
     private class ProvForm
     {
+        public string ServerAddress { get; set; } = "";
         public string PortName { get; set; } = "";
         public string Ssid { get; set; } = "";
         public string Password { get; set; } = "";

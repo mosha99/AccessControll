@@ -9,7 +9,10 @@ var builder = WebAssemblyHostBuilder.CreateDefault(args);
 builder.RootComponents.Add<App>("#app");
 builder.RootComponents.Add<HeadOutlet>("head::after");
 
-var apiBaseUrl = "http://localhost:5000";
+// When served by the API (production), BaseAddress = same origin → no CORS needed.
+// In dev (standalone Blazor server on a different port), override via appsettings.
+var apiBaseUrl = builder.Configuration["ApiBaseUrl"]
+                 ?? builder.HostEnvironment.BaseAddress;
 
 builder.Services.AddScoped(sp => new HttpClient { BaseAddress = new Uri(apiBaseUrl) });
 builder.Services.AddBlazoredLocalStorage();

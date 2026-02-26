@@ -93,16 +93,16 @@ public class ProvisioningService
     /// picks up the updated values.
     /// </summary>
     /// <param name="stationType">0=General, 1=Door, 2=RemoteControl — baked into firmware.</param>
-    public void WriteConfigHeader(string ssid, string password, int stationType = 0)
+    public void WriteConfigHeader(string ssid, string password, int stationType = 0, string? serverHostOverride = null, int? serverPortOverride = null)
     {
         var sketchPath = GetSketchPath()
             ?? throw new InvalidOperationException("Sketch path not found");
 
-        var host = string.IsNullOrEmpty(_config["SignalR:Host"])
-            ? GetServerLocalIp()
-            : _config["SignalR:Host"]!;
+        var host = serverHostOverride
+            ?? (string.IsNullOrEmpty(_config["SignalR:Host"]) ? GetServerLocalIp() : _config["SignalR:Host"]!);
 
-        var port = int.TryParse(_config["SignalR:Port"], out var p) ? p : 5000;
+        var port = serverPortOverride
+            ?? (int.TryParse(_config["SignalR:Port"], out var p) ? p : 5000);
 
         var content =
             $"""

@@ -100,7 +100,7 @@ public class StationsController : ControllerBase
             // ── Step 1: Bake WiFi creds + server pubkey into config.h ─────────────
             // The sketch reads config.h on first boot and writes to EEPROM.
             // No UART roundtrip needed — credentials travel inside the firmware.
-            try { _provisioning.WriteConfigHeader(req.Ssid, req.Password, req.StationType); }
+            try { _provisioning.WriteConfigHeader(req.Ssid, req.Password, req.StationType, req.ServerHost, req.ServerPort); }
             catch (Exception ex)
             {
                 return BadRequest(new { message = $"خطا در نوشتن config.h: {ex.Message}", flashOutput });
@@ -231,4 +231,4 @@ public class StationsController : ControllerBase
 
 public record RegisterStationRequest(string MacAddress, string Name, string? Description, string? Ip, int? Type = null);
 public record UpdateStationRequest(string Name, string? Description, bool IsEnabled, int Type = 0);
-public record ProvisionRequest(string PortName, string Ssid, string Password, string Name, string? Description, bool FlashFirst = false, string? SessionId = null, int StationType = 0);
+public record ProvisionRequest(string PortName, string Ssid, string Password, string Name, string? Description, bool FlashFirst = false, string? SessionId = null, int StationType = 0, string? ServerHost = null, int? ServerPort = null);

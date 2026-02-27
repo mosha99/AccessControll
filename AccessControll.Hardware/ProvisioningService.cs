@@ -180,8 +180,13 @@ public class ProvisioningService
         proc.BeginOutputReadLine();
         proc.BeginErrorReadLine();
 
-        var cts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         await proc.WaitForExitAsync(cts.Token);
+        // WaitForExitAsync returns when the process exits, but OutputDataReceived /
+        // ErrorDataReceived events may still have buffered lines queued for delivery.
+        // Calling WaitForExit() (no-arg) ensures all async output events have fully fired
+        // before we read sb — otherwise output is cut off mid-stream (the "4% bug").
+        proc.WaitForExit();
 
         return proc.ExitCode == 0
             ? (true,  sb.ToString())

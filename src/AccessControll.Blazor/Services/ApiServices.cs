@@ -429,8 +429,11 @@ public class StationService : IStationService
     public async Task<(bool Success, string? Mac, bool AlreadyRegistered, string? Error, string? FlashOutput)> ProvisionAsync(
         string portName, string ssid, string password, string name, string? description, bool flashFirst = false, string? sessionId = null, int stationType = 0, string? serverHost = null, int? serverPort = null)
     {
+        // Flashing can take several minutes — use a 8-minute timeout to outlast the server-side 5-minute limit
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(8));
         var r = await _http.PostAsJsonAsync("api/stations/provision",
-            new { portName, ssid, password, name, description, flashFirst, sessionId, stationType, serverHost, serverPort });
+            new { portName, ssid, password, name, description, flashFirst, sessionId, stationType, serverHost, serverPort },
+            cts.Token);
 
         var json = await r.Content.ReadFromJsonAsync<JsonElement>();
 

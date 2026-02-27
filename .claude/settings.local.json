@@ -3,7 +3,10 @@
     "allow": [
       "Bash(powershell -Command:*)",
       "Bash(dotnet ef migrations add:*)",
-      "Bash(dotnet build:*)"
+      "Bash(dotnet build:*)",
+      "Bash(dotnet ef database update --project src/AccessControll.Infrastructure --startup-project src/AccessControll.API)",
+      "Bash(git commit:*)",
+      "Bash(git add AccessControll.Hardware/ProvisioningService.cs src/AccessControll.Blazor/Services/ApiServices.cs)"
     ]
   }
 }

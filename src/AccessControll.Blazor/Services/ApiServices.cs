@@ -492,14 +492,15 @@ public class PanelService : IPanelService
 
         try
         {
-            _cachedPanels = await _http.GetFromJsonAsync<List<string>>("api/auth/my-panels", JsonOptions.CaseInsensitive) ?? new();
+            var result = await _http.GetFromJsonAsync<List<string>>("api/auth/my-panels", JsonOptions.CaseInsensitive);
+            if (result is not null)
+                _cachedPanels = result;   // only cache on success
+            return result ?? new();
         }
         catch
         {
-            _cachedPanels = new();
+            return new();   // don't cache on failure — retry next call
         }
-
-        return _cachedPanels;
     }
 
     public async Task<List<string>> GetRolePanelsAsync(string roleName)

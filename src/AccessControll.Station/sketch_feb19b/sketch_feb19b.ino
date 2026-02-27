@@ -747,9 +747,33 @@ void loop() {
   }
 #endif
 
+  // ── WiFi watchdog (non-blocking) ────────────────────────────────────────
+  static bool          _wifiLost    = false;
+  static unsigned long _wifiRetryAt = 0;
+
   if (WiFi.status() != WL_CONNECTED) {
-    logMessage("WiFi lost, reconnecting...");
-    WiFi.reconnect();
-    delay(1000);
+    if (!_wifiLost) {
+      _wifiLost    = true;
+      _wifiRetryAt = millis() + 10000;   // first retry after 10 s
+      logMessage("WiFi lost!");
+      oledShowStatus("WiFi lost!", "Retrying...");
+    }
+    if (millis() >= _wifiRetryAt) {
+      logMessage("WiFi reconnecting...");
+      WiFi.disconnect();
+      WiFi.reconnect();
+      _wifiRetryAt = millis() + 15000;   // next retry in 15 s
+    }
+  } else if (_wifiLost) {
+    _wifiLost = false;
+    String ip = WiFi.localIP().toString();
+    logMessage("WiFi restored: " + ip);
+    oledShowStatus("WiFi OK", ip);
+    // Force WebSocket re-init — library may be stuck in bad state after WiFi loss
+    if (g_wsStarted) {
+      ws.disconnect();
+      ws.begin(g_wsHost, g_wsPort, WS_PATH);
+    }
   }
+  // ─────────────────────────────────────────────────────────────────────────
 }

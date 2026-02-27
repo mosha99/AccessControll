@@ -85,10 +85,7 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
             e.Property(p => p.RoleName).HasMaxLength(256).IsRequired();
             e.Property(p => p.Panel).HasMaxLength(50).IsRequired();
             e.HasIndex(p => new { p.RoleName, p.Panel }).IsUnique();
-            e.HasData(
-                new RolePanelPermission { Id = 1, RoleName = "DoorManager", Panel = "doors" },
-                new RolePanelPermission { Id = 2, RoleName = "DoorManager", Panel = "logs" }
-            );
+            // no default panel seeds — roles are created dynamically
         });
 
         // Seed default roles

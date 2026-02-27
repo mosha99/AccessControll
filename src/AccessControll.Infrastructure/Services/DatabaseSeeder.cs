@@ -16,7 +16,7 @@ public static class DatabaseSeeder
     {
         Console.WriteLine("---------Start Seed ----------------------");
         // Seed roles
-        var roles = new[] { "Admin", "DoorManager", "User" };
+        var roles = new[] { "Admin" };
         foreach (var role in roles)
         {
             if (!await roleManager.RoleExistsAsync(role))

@@ -1,18 +1,29 @@
 @page "/roles"
 @using AccessControll.Blazor.Services
 @using Microsoft.AspNetCore.Authorization
-@attribute [Authorize(Roles = "Admin")]
+@attribute [Authorize]
 @inject IRoleService RoleService
+@inject IPanelService PanelService
 
 <PageTitle>مدیریت نقش‌ها — MediaR</PageTitle>
 
+@if (!_hasAccess)
+{
+    <div class="access-denied" style="padding:60px;text-align:center"><h2>🚫 دسترسی ندارید</h2></div>
+}
+else
+{
 <div class="page" dir="rtl">
     <div class="page-header">
         <div>
             <h1>🎭 مدیریت نقش‌ها (Dynamic Roles)</h1>
             <p class="subtitle">نقش‌های سیستم را به صورت داینامیک مدیریت کنید</p>
         </div>
-        <button class="btn-primary" @onclick="OpenCreateModal">+ نقش جدید</button>
+        <AuthorizeView Roles="Admin">
+            <Authorized>
+                <button class="btn-primary" @onclick="OpenCreateModal">+ نقش جدید</button>
+            </Authorized>
+        </AuthorizeView>
     </div>
 
     <div class="roles-grid">
@@ -24,11 +35,31 @@
                     <span class="role-name">@role.Name</span>
                     <span class="role-users">@role.UsersCount کاربر</span>
                 </div>
+                <div class="role-panels-preview">
+                    @if (string.Equals(role.Name, "Admin", StringComparison.OrdinalIgnoreCase))
+                    {
+                        <span class="panel-chip all-access">🔒 دسترسی کامل</span>
+                    }
+                    else if (_rolePanels.TryGetValue(role.Name, out var chips) && chips.Count > 0)
+                    {
+                        @foreach (var p in chips)
+                        {
+                            <span class="panel-chip">@GetPanelLabel(p)</span>
+                        }
+                    }
+                    else
+                    {
+                        <span class="panel-chip empty">بدون دسترسی</span>
+                    }
+                </div>
                 <div class="role-actions">
+                    <button class="btn-panels" @onclick="@(() => OpenPanelModal(role.Name))" title="تنظیم پنل‌ها">
+                        ⚙️ پنل‌ها
+                    </button>
                     @if (!IsSystemRole(role.Name))
                     {
                         <button class="btn-delete-role" @onclick="@(() => DeleteRole(role.Id, role.Name))"
-                                title="حذف نقش">🗑️ حذف</button>
+                                title="حذف نقش">🗑️</button>
                     }
                     else
                     {
@@ -39,10 +70,14 @@
         }
 
         <!-- Add new role card -->
-        <div class="role-card role-add" @onclick="OpenCreateModal">
-            <div class="add-icon">+</div>
-            <span>نقش جدید</span>
-        </div>
+        <AuthorizeView Roles="Admin">
+            <Authorized>
+                <div class="role-card role-add" @onclick="OpenCreateModal">
+                    <div class="add-icon">+</div>
+                    <span>نقش جدید</span>
+                </div>
+            </Authorized>
+        </AuthorizeView>
     </div>
 
     <div class="info-box">
@@ -51,11 +86,13 @@
             <li>نقش‌های جدید پس از ایجاد بلافاصله در سیستم فعال می‌شوند</li>
             <li>می‌توانید از صفحه کاربران نقش‌ها را به کاربران اختصاص دهید</li>
             <li>نقش‌های سیستمی (Admin, DoorManager, User) قابل حذف نیستند</li>
-            <li>برای کنترل درها، کاربران باید دارای نقش <strong>DoorManager</strong> یا <strong>Admin</strong> باشند</li>
+            <li>برای هر نقش، می‌توانید دسترسی به پنل‌های مختلف را تنظیم کنید</li>
         </ul>
     </div>
 </div>
+} @* /else _hasAccess *@
 
+<!-- Modal: Create Role -->
 @if (_showModal)
 {
     <div class="modal-overlay" @onclick="CloseModal">
@@ -84,22 +121,114 @@
     </div>
 }
 
+<!-- Modal: Panel Permissions -->
+@if (_showPanelModal)
+{
+    <div class="modal-overlay" @onclick="ClosePanelModal">
+        <div class="modal" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h3>دسترسی پنل‌ها — @_panelRoleName</h3>
+                <button class="modal-close" @onclick="ClosePanelModal">✕</button>
+            </div>
+            <div class="modal-body">
+                @if (string.Equals(_panelRoleName, "Admin", StringComparison.OrdinalIgnoreCase))
+                {
+                    <div class="admin-full-access">
+                        <span class="full-access-icon">🔒</span>
+                        <p>ادمین همیشه دسترسی کامل به تمام پنل‌ها دارد. این تنظیم قابل تغییر نیست.</p>
+                    </div>
+                }
+                else
+                {
+                    <p class="panel-modal-hint">پنل‌هایی که این نقش می‌تواند به آن‌ها دسترسی داشته باشد را انتخاب کنید:</p>
+                    <div class="panels-checklist">
+                        <label class="panel-check-item">
+                            <input type="checkbox" @bind="_panelDoors" />
+                            <span>⚡ مدیریت خروجی‌ها</span>
+                        </label>
+                        <label class="panel-check-item">
+                            <input type="checkbox" @bind="_panelLogs" />
+                            <span>📋 لاگ دسترسی</span>
+                        </label>
+                        <label class="panel-check-item">
+                            <input type="checkbox" @bind="_panelStations" />
+                            <span>🖥️ ایستگاه‌ها</span>
+                        </label>
+                        <label class="panel-check-item">
+                            <input type="checkbox" @bind="_panelUsers" />
+                            <span>👥 کاربران</span>
+                        </label>
+                        <label class="panel-check-item">
+                            <input type="checkbox" @bind="_panelRoles" />
+                            <span>🎭 نقش‌ها</span>
+                        </label>
+                    </div>
+                    @if (!string.IsNullOrEmpty(_panelError))
+                    {
+                        <div class="form-error">⚠️ @_panelError</div>
+                    }
+                }
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" @onclick="ClosePanelModal">بستن</button>
+                @if (!string.Equals(_panelRoleName, "Admin", StringComparison.OrdinalIgnoreCase))
+                {
+                    <button class="btn-primary" @onclick="SavePanels" disabled="@_panelSaving">
+                        @(_panelSaving ? "در حال ذخیره..." : "ذخیره دسترسی‌ها")
+                    </button>
+                }
+            </div>
+        </div>
+    </div>
+}
+
 @code {
+    private bool _hasAccess = true;
     private List<RoleDto> _roles = new();
     private bool _showModal, _saving;
     private string _newRoleName = "";
     private string _error = "";
 
-    private static readonly HashSet<string> SystemRoles = new() { "Admin", "DoorManager", "User" };
+    // Panel modal
+    private bool _showPanelModal, _panelSaving;
+    private string _panelRoleName = "";
+    private string _panelError = "";
+    private bool _panelDoors, _panelLogs, _panelStations, _panelUsers, _panelRoles;
+    private Dictionary<string, List<string>> _rolePanels = new();
 
-    protected override async Task OnInitializedAsync() => await LoadRoles();
+    private static readonly HashSet<string> SystemRoles = new() { "Admin", "DoorManager", "User" };
+    private static readonly string[] AllPanels = ["doors", "logs", "stations", "users", "roles"];
+
+    protected override async Task OnInitializedAsync()
+    {
+        var panels = await PanelService.GetMyPanelsAsync();
+        _hasAccess = panels.Contains("roles");
+        if (!_hasAccess) return;
+
+        await LoadRoles();
+    }
 
     private async Task LoadRoles()
     {
         _roles = await RoleService.GetAllAsync();
+        // Load panel permissions for each non-Admin role
+        foreach (var role in _roles.Where(r => !string.Equals(r.Name, "Admin", StringComparison.OrdinalIgnoreCase)))
+        {
+            _rolePanels[role.Name] = await PanelService.GetRolePanelsAsync(role.Name);
+        }
     }
 
     private bool IsSystemRole(string name) => SystemRoles.Contains(name);
+
+    private static string GetPanelLabel(string panel) => panel switch
+    {
+        "doors"    => "⚡ خروجی‌ها",
+        "logs"     => "📋 لاگ",
+        "stations" => "🖥️ ایستگاه‌ها",
+        "users"    => "👥 کاربران",
+        "roles"    => "🎭 نقش‌ها",
+        _          => panel
+    };
 
     private void OpenCreateModal() { _newRoleName = ""; _error = ""; _showModal = true; }
     private void CloseModal() { _showModal = false; }
@@ -120,6 +249,53 @@
         var success = await RoleService.DeleteAsync(id);
         if (success) await LoadRoles();
     }
+
+    private async Task OpenPanelModal(string roleName)
+    {
+        _panelRoleName = roleName;
+        _panelError = "";
+        _panelSaving = false;
+
+        if (!string.Equals(roleName, "Admin", StringComparison.OrdinalIgnoreCase))
+        {
+            var currentPanels = await PanelService.GetRolePanelsAsync(roleName);
+            _panelDoors    = currentPanels.Contains("doors");
+            _panelLogs     = currentPanels.Contains("logs");
+            _panelStations = currentPanels.Contains("stations");
+            _panelUsers    = currentPanels.Contains("users");
+            _panelRoles    = currentPanels.Contains("roles");
+        }
+
+        _showPanelModal = true;
+    }
+
+    private void ClosePanelModal() { _showPanelModal = false; }
+
+    private async Task SavePanels()
+    {
+        _panelSaving = true;
+        _panelError = "";
+
+        var selected = new List<string>();
+        if (_panelDoors)    selected.Add("doors");
+        if (_panelLogs)     selected.Add("logs");
+        if (_panelStations) selected.Add("stations");
+        if (_panelUsers)    selected.Add("users");
+        if (_panelRoles)    selected.Add("roles");
+
+        var success = await PanelService.SetRolePanelsAsync(_panelRoleName, selected);
+        if (success)
+        {
+            _rolePanels[_panelRoleName] = selected;
+            ClosePanelModal();
+        }
+        else
+        {
+            _panelError = "خطا در ذخیره دسترسی‌ها";
+        }
+
+        _panelSaving = false;
+    }
 }
 
 <style>
@@ -130,8 +306,8 @@
 
     .roles-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-bottom: 32px; }
     .role-card {
-        background: white; border-radius: 14px; padding: 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.07);
-        display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center;
+        background: white; border-radius: 14px; padding: 20px; box-shadow: 0 2px 12px rgba(0,0,0,0.07);
+        display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center;
         transition: all 0.2s; border: 2px solid transparent;
     }
     .role-card:hover { border-color: #0f3460; transform: translateY(-3px); }
@@ -139,11 +315,18 @@
     .role-info { display: flex; flex-direction: column; gap: 4px; }
     .role-name { font-size: 16px; font-weight: 600; color: #1a1a2e; }
     .role-users { font-size: 12px; color: #888; }
-    .role-actions { margin-top: 8px; }
 
+    .role-panels-preview { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; min-height: 24px; }
+    .panel-chip { background: #e8f0fe; color: #1a73e8; font-size: 10px; padding: 2px 7px; border-radius: 12px; }
+    .panel-chip.all-access { background: #e6f4ea; color: #1a7a3c; }
+    .panel-chip.empty { background: #f5f5f5; color: #aaa; }
+
+    .role-actions { display: flex; gap: 8px; margin-top: 4px; align-items: center; }
     .system-badge { background: #e8f0fe; color: #1a73e8; font-size: 11px; padding: 3px 10px; border-radius: 20px; }
-    .btn-delete-role { background: #fdecea; color: #c00; border: none; border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
+    .btn-delete-role { background: #fdecea; color: #c00; border: none; border-radius: 6px; padding: 5px 10px; font-size: 13px; cursor: pointer; }
     .btn-delete-role:hover { background: #f8bbbb; }
+    .btn-panels { background: #f0f4ff; color: #0f3460; border: none; border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; font-weight: 500; }
+    .btn-panels:hover { background: #dce8ff; }
 
     .role-add {
         border: 2px dashed #ccc; cursor: pointer; color: #aaa;
@@ -155,7 +338,7 @@
     .info-box { background: #f0f7ff; border: 1px solid #bde0ff; border-radius: 12px; padding: 20px; }
     .info-box h3 { font-size: 16px; font-weight: 600; margin-bottom: 12px; color: #1565c0; }
     .info-box ul { list-style: none; display: flex; flex-direction: column; gap: 8px; }
-    .info-box li { font-size: 13px; color: #444; padding-right: 8px; border-right: 2px solid #1a73e8; padding-right: 12px; }
+    .info-box li { font-size: 13px; color: #444; padding-right: 12px; border-right: 2px solid #1a73e8; }
 
     .btn-primary { background: #0f3460; color: white; padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; }
     .btn-primary:hover:not(:disabled) { background: #16213e; }
@@ -163,15 +346,29 @@
     .btn-secondary { background: #f0f0f0; color: #333; padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
 
     .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-    .modal { background: white; border-radius: 16px; width: 400px; max-width: 95vw; overflow: hidden; }
+    .modal { background: white; border-radius: 16px; width: 420px; max-width: 95vw; overflow: hidden; }
     .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 20px 24px; border-bottom: 1px solid #eee; }
     .modal-header h3 { font-size: 18px; font-weight: 600; }
     .modal-close { background: none; border: none; font-size: 18px; cursor: pointer; color: #888; }
     .modal-body { padding: 24px; }
-    .modal-footer { display: flex; gap: 10px; padding: 16px 24px; border-top: 1px solid #eee; }
+    .modal-footer { display: flex; gap: 10px; padding: 16px 24px; border-top: 1px solid #eee; justify-content: flex-end; }
     .form-row { display: flex; flex-direction: column; gap: 6px; }
     .form-row label { font-size: 13px; font-weight: 500; }
     .form-input { padding: 10px 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px; outline: none; width: 100%; }
     .form-input:focus { border-color: #0f3460; }
     .form-error { background: #fdecea; border: 1px solid #ffb3b3; color: #c00; border-radius: 8px; padding: 10px; font-size: 13px; margin-top: 12px; }
+
+    .panel-modal-hint { font-size: 13px; color: #555; margin-bottom: 16px; }
+    .panels-checklist { display: flex; flex-direction: column; gap: 12px; }
+    .panel-check-item {
+        display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+        background: #f8f9fa; border-radius: 10px; cursor: pointer;
+        border: 2px solid transparent; transition: all 0.15s; font-size: 14px;
+    }
+    .panel-check-item:hover { border-color: #0f3460; background: #f0f4ff; }
+    .panel-check-item input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; accent-color: #0f3460; }
+
+    .admin-full-access { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 20px; text-align: center; }
+    .full-access-icon { font-size: 48px; }
+    .admin-full-access p { color: #555; font-size: 14px; line-height: 1.6; }
 </style>

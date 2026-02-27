@@ -1,15 +1,22 @@
 @page "/doors"
 @using AccessControll.Blazor.Services
 @using Microsoft.AspNetCore.Authorization
-@attribute [Authorize(Roles = "Admin,DoorManager")]
+@attribute [Authorize]
 @inject IDoorService DoorService
 @inject IUserService UserService
 @inject IStationService StationService
+@inject IPanelService PanelService
 @inject DoorHubService HubService
 @implements IAsyncDisposable
 
 <PageTitle>مدیریت خروجی‌ها — AccessControll</PageTitle>
 
+@if (!_hasAccess && _initialized)
+{
+    <div class="access-denied"><h2>🚫 دسترسی ندارید</h2><p>شما مجوز مشاهده این صفحه را ندارید.</p></div>
+}
+else
+{
 <div class="page" dir="rtl">
     <div class="page-header">
         <h1>⚡ مدیریت خروجی‌ها</h1>
@@ -291,8 +298,11 @@
         </div>
     </div>
 }
+} @* /else _hasAccess *@
 
 @code {
+    private bool _hasAccess = true; // starts true to avoid flicker
+    private bool _initialized;
     private List<DoorDto> _doors = new();
     private List<StationDto> _stations = new();
     private bool _showModal, _saving;
@@ -314,6 +324,11 @@
 
     protected override async Task OnInitializedAsync()
     {
+        var panels = await PanelService.GetMyPanelsAsync();
+        _hasAccess = panels.Contains("doors");
+        _initialized = true;
+        if (!_hasAccess) return;
+
         await Task.WhenAll(LoadDoors(), LoadStations());
         HubService.OnDoorStatusChanged += OnDoorStatusChanged;
         await HubService.StartAsync();

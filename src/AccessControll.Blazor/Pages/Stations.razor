@@ -1,14 +1,21 @@
 @page "/stations"
 @using AccessControll.Blazor.Services
 @using Microsoft.AspNetCore.Authorization
-@attribute [Authorize(Roles = "Admin")]
+@attribute [Authorize]
 @implements IAsyncDisposable
 @inject IStationService StationService
+@inject IPanelService PanelService
 @inject DoorHubService HubService
 @inject NavigationManager Nav
 
 <PageTitle>مدیریت ایستگاه‌ها — AccessControll</PageTitle>
 
+@if (!_hasAccess)
+{
+    <div class="access-denied" style="padding:60px;text-align:center"><h2>🚫 دسترسی ندارید</h2></div>
+}
+else
+{
 <div class="page" dir="rtl">
     <div class="page-header">
         <h1>🖥️ مدیریت ایستگاه‌ها</h1>
@@ -320,8 +327,10 @@
         </div>
     </div>
 }
+} @* /else _hasAccess *@
 
 @code {
+    private bool _hasAccess = true;
     private List<StationDto> _stations = new();
     private List<DiscoveredStationDto> _discovered = new();
     private bool _scanning;
@@ -352,6 +361,10 @@
 
     protected override async Task OnInitializedAsync()
     {
+        var panels = await PanelService.GetMyPanelsAsync();
+        _hasAccess = panels.Contains("stations");
+        if (!_hasAccess) return;
+
         await LoadStations();
 
         await HubService.StartAsync();

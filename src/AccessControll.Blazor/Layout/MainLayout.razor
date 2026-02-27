@@ -2,6 +2,7 @@
 @using Microsoft.AspNetCore.Components.Authorization
 @inject NavigationManager Nav
 @inject AccessControll.Blazor.Services.IAuthService AuthService
+@inject AccessControll.Blazor.Services.IPanelService PanelService
 
 <div class="layout-container" dir="rtl">
 
@@ -26,15 +27,26 @@
             <Authorized Context="outerAuth">
                 <ul class="nav-list">
                     <li><a href="/" class="nav-link" @onclick="CloseSidebar">🏠 داشبورد</a></li>
-                    <li><a href="/doors" class="nav-link" @onclick="CloseSidebar">⚡ مدیریت خروجی‌ها</a></li>
-                    <li><a href="/logs" class="nav-link" @onclick="CloseSidebar">📋 لاگ دسترسی</a></li>
-                    <AuthorizeView Roles="Admin">
-                        <Authorized Context="adminAuth">
-                            <li><a href="/stations" class="nav-link" @onclick="CloseSidebar">🖥️ ایستگاه‌ها</a></li>
-                            <li><a href="/users" class="nav-link" @onclick="CloseSidebar">👥 کاربران</a></li>
-                            <li><a href="/roles" class="nav-link" @onclick="CloseSidebar">🎭 نقش‌ها</a></li>
-                        </Authorized>
-                    </AuthorizeView>
+                    @if (_panels.Contains("doors"))
+                    {
+                        <li><a href="/doors" class="nav-link" @onclick="CloseSidebar">⚡ مدیریت خروجی‌ها</a></li>
+                    }
+                    @if (_panels.Contains("logs"))
+                    {
+                        <li><a href="/logs" class="nav-link" @onclick="CloseSidebar">📋 لاگ دسترسی</a></li>
+                    }
+                    @if (_panels.Contains("stations"))
+                    {
+                        <li><a href="/stations" class="nav-link" @onclick="CloseSidebar">🖥️ ایستگاه‌ها</a></li>
+                    }
+                    @if (_panels.Contains("users"))
+                    {
+                        <li><a href="/users" class="nav-link" @onclick="CloseSidebar">👥 کاربران</a></li>
+                    }
+                    @if (_panels.Contains("roles"))
+                    {
+                        <li><a href="/roles" class="nav-link" @onclick="CloseSidebar">🎭 نقش‌ها</a></li>
+                    }
                     <li><a href="/profile" class="nav-link" @onclick="CloseSidebar">⚙️ پروفایل</a></li>
                     <li>
                         <button class="nav-link btn-logout" @onclick="HandleLogout">🚪 خروج</button>
@@ -61,6 +73,12 @@
 
 @code {
     private bool _sidebarOpen = false;
+    private List<string> _panels = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _panels = await PanelService.GetMyPanelsAsync();
+    }
 
     private void ToggleSidebar() => _sidebarOpen = !_sidebarOpen;
     private void CloseSidebar() => _sidebarOpen = false;

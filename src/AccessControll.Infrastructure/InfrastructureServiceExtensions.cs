@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -8,6 +9,7 @@ using System.Text;
 using AccessControll.Application.Auth;
 using AccessControll.Domain.Entities;
 using AccessControll.Domain.Interfaces;
+using AccessControll.Infrastructure.Authorization;
 using AccessControll.Infrastructure.Data;
 using AccessControll.Infrastructure.Repositories;
 using AccessControll.Infrastructure.Services;
@@ -101,6 +103,18 @@ public static class InfrastructureServiceExtensions
         services.AddScoped<IDoorRepository, DoorRepository>();
         services.AddScoped<IDoorAccessLogRepository, DoorAccessLogRepository>();
         services.AddScoped<IUserDoorPermissionRepository, UserDoorPermissionRepository>();
+        services.AddScoped<IRolePanelPermissionRepository, RolePanelPermissionRepository>();
+
+        // Authorization handler + panel-based named policies
+        services.AddScoped<IAuthorizationHandler, PanelAccessHandler>();
+        services.AddAuthorization(options =>
+        {
+            options.AddPolicy("panel:doors",    p => p.Requirements.Add(new PanelAccessRequirement(AppPanels.Doors)));
+            options.AddPolicy("panel:logs",     p => p.Requirements.Add(new PanelAccessRequirement(AppPanels.Logs)));
+            options.AddPolicy("panel:stations", p => p.Requirements.Add(new PanelAccessRequirement(AppPanels.Stations)));
+            options.AddPolicy("panel:users",    p => p.Requirements.Add(new PanelAccessRequirement(AppPanels.Users)));
+            options.AddPolicy("panel:roles",    p => p.Requirements.Add(new PanelAccessRequirement(AppPanels.Roles)));
+        });
 
         // Services
         services.AddScoped<IJwtService, JwtService>();

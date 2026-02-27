@@ -1,12 +1,19 @@
 @page "/users"
 @using AccessControll.Blazor.Services
 @using Microsoft.AspNetCore.Authorization
-@attribute [Authorize(Roles = "Admin")]
+@attribute [Authorize]
 @inject IUserService UserService
 @inject IRoleService RoleService
+@inject IPanelService PanelService
 
 <PageTitle>مدیریت کاربران — AccessControll</PageTitle>
 
+@if (!_hasAccess)
+{
+    <div class="access-denied" style="padding:60px;text-align:center"><h2>🚫 دسترسی ندارید</h2></div>
+}
+else
+{
 <div class="page" dir="rtl">
     <div class="page-header">
         <h1>👥 مدیریت کاربران</h1>
@@ -144,8 +151,10 @@
         </div>
     </div>
 }
+} @* /else _hasAccess *@
 
 @code {
+    private bool _hasAccess = true;
     private List<UserDto> _users = new();
     private List<RoleDto> _allRoles = new();
     private bool _loading = true;
@@ -157,6 +166,10 @@
 
     protected override async Task OnInitializedAsync()
     {
+        var panels = await PanelService.GetMyPanelsAsync();
+        _hasAccess = panels.Contains("users");
+        if (!_hasAccess) return;
+
         await LoadRoles();
         await LoadUsers();
     }

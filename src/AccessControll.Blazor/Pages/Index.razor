@@ -4,6 +4,7 @@
 @attribute [Authorize]
 @inject IDoorService DoorService
 @inject ILogService LogService
+@inject IPanelService PanelService
 @inject DoorHubService HubService
 @implements IAsyncDisposable
 
@@ -50,6 +51,8 @@
     </div>
 
     <!-- Door quick controls -->
+    @if (_panels.Contains("doors"))
+    {
     <div class="section">
         <h2>🚪 کنترل سریع درها</h2>
         @if (_loading)
@@ -89,8 +92,11 @@
             </div>
         }
     </div>
+    }
 
     <!-- Recent logs -->
+    @if (_panels.Contains("logs"))
+    {
     <div class="section">
         <h2>📋 آخرین رویدادها</h2>
         <div class="log-list">
@@ -109,17 +115,20 @@
             }
         </div>
     </div>
+    }
 </div>
 
 @code {
     private List<DoorDto> _doors = new();
     private List<DoorAccessLogDto> _recentLogs = new();
+    private List<string> _panels = new();
     private bool _loading = true;
     private bool _hubConnected = false;
     private int _totalDoors, _unlockedDoors, _lockedDoors, _todayLogs;
 
     protected override async Task OnInitializedAsync()
     {
+        _panels = await PanelService.GetMyPanelsAsync();
         await LoadData();
         await ConnectHub();
     }
@@ -127,15 +136,23 @@
     private async Task LoadData()
     {
         _loading = true;
-        _doors = await DoorService.GetAllAsync();
-        _totalDoors = _doors.Count;
-        _unlockedDoors = _doors.Count(d => !d.IsLocked && d.IsEnabled);
-        _lockedDoors = _doors.Count(d => d.IsLocked);
 
-        var today = DateTime.UtcNow.Date;
-        var logs = await LogService.GetLogsAsync(from: today, pageSize: 10);
-        _recentLogs = logs.Items.ToList();
-        _todayLogs = logs.Total;
+        if (_panels.Contains("doors"))
+        {
+            _doors = await DoorService.GetAllAsync();
+            _totalDoors = _doors.Count;
+            _unlockedDoors = _doors.Count(d => !d.IsLocked && d.IsEnabled);
+            _lockedDoors = _doors.Count(d => d.IsLocked);
+        }
+
+        if (_panels.Contains("logs"))
+        {
+            var today = DateTime.UtcNow.Date;
+            var logs = await LogService.GetLogsAsync(from: today, pageSize: 10);
+            _recentLogs = logs.Items.ToList();
+            _todayLogs = logs.Total;
+        }
+
         _loading = false;
     }
 

@@ -12,7 +12,7 @@ namespace AccessControll.API.Controllers;
 
 [ApiController]
 [Route("api/stations")]
-[Authorize(Roles = "Admin")]
+[Authorize(Policy = "panel:stations")]
 public class StationsController : ControllerBase
 {
     private readonly ApplicationDbContext _db;
@@ -40,6 +40,7 @@ public class StationsController : ControllerBase
     /// Use the fingerprint to confirm a provisioned station received the correct key.
     /// </summary>
     [HttpGet("server-key")]
+    [Authorize(Roles = "Admin")]
     public IActionResult GetServerKey()
     {
         // Live round-trip: sign a random nonce and verify it — confirms the key service works
@@ -78,6 +79,7 @@ public class StationsController : ControllerBase
 
     /// <summary>Returns the list of serial ports available on the server OS.</summary>
     [HttpGet("serial-ports")]
+    [Authorize(Roles = "Admin")]
     public IActionResult GetSerialPorts()
     {
         return Ok(ProvisioningService.GetAvailablePorts());
@@ -90,6 +92,7 @@ public class StationsController : ControllerBase
     ///   - FlashFirst=false: legacy roundtrip — send PROVISION command, wait for OK:{mac}.
     /// </summary>
     [HttpPost("provision")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Provision([FromBody] ProvisionRequest req)
     {
         string? flashOutput = null;
@@ -159,6 +162,7 @@ public class StationsController : ControllerBase
 
     /// <summary>Register a station by MAC address (and optional IP).</summary>
     [HttpPost]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Register([FromBody] RegisterStationRequest req)
     {
         var mac = req.MacAddress.ToUpperInvariant();
@@ -186,6 +190,7 @@ public class StationsController : ControllerBase
 
     /// <summary>Update station name / description / enabled flag.</summary>
     [HttpPut("{mac}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Update(string mac, [FromBody] UpdateStationRequest req)
     {
         var station = await _db.Stations.FirstOrDefaultAsync(s => s.MacAddress == mac.ToUpperInvariant());
@@ -218,6 +223,7 @@ public class StationsController : ControllerBase
 
     /// <summary>Remove a registered station.</summary>
     [HttpDelete("{mac}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Delete(string mac)
     {
         var station = await _db.Stations.FirstOrDefaultAsync(s => s.MacAddress == mac.ToUpperInvariant());

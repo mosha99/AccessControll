@@ -16,6 +16,7 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
     public DbSet<DoorAccessLog> DoorAccessLogs => Set<DoorAccessLog>();
     public DbSet<UserDoorPermission> UserDoorPermissions => Set<UserDoorPermission>();
     public DbSet<Station> Stations => Set<Station>();
+    public DbSet<RolePanelPermission> RolePanelPermissions => Set<RolePanelPermission>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -75,6 +76,19 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
             e.Property(s => s.Name).HasMaxLength(200).IsRequired();
             e.Property(s => s.LastKnownIp).HasMaxLength(50).IsRequired(false);
             e.HasIndex(s => s.MacAddress).IsUnique();
+        });
+
+        // RolePanelPermission
+        builder.Entity<RolePanelPermission>(e =>
+        {
+            e.HasKey(p => p.Id);
+            e.Property(p => p.RoleName).HasMaxLength(256).IsRequired();
+            e.Property(p => p.Panel).HasMaxLength(50).IsRequired();
+            e.HasIndex(p => new { p.RoleName, p.Panel }).IsUnique();
+            e.HasData(
+                new RolePanelPermission { Id = 1, RoleName = "DoorManager", Panel = "doors" },
+                new RolePanelPermission { Id = 2, RoleName = "DoorManager", Panel = "logs" }
+            );
         });
 
         // Seed default roles

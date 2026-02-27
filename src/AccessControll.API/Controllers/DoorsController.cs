@@ -31,7 +31,7 @@ public class DoorsController : ControllerBase
 
     /// <summary>لیست تمام درها</summary>
     [HttpGet]
-    [Authorize(Roles = "Admin,DoorManager")]
+    [Authorize(Policy = "panel:doors")]
     public async Task<IActionResult> GetAll()
     {
         var doors = await _mediator.Send(new GetAllDoorsQuery());
@@ -40,7 +40,7 @@ public class DoorsController : ControllerBase
 
     /// <summary>اطلاعات یک در</summary>
     [HttpGet("{id:guid}")]
-    [Authorize(Roles = "Admin,DoorManager")]
+    [Authorize(Policy = "panel:doors")]
     public async Task<IActionResult> GetById(Guid id)
     {
         var door = await _mediator.Send(new GetDoorByIdQuery(id));
@@ -100,7 +100,7 @@ public class DoorsController : ControllerBase
 
     /// <summary>لاگ دسترسی‌های درها</summary>
     [HttpGet("logs")]
-    [Authorize(Roles = "Admin,DoorManager")]
+    [Authorize(Policy = "panel:logs")]
     public async Task<IActionResult> GetLogs(
         [FromQuery] Guid? doorId,
         [FromQuery] string? userId,
@@ -115,7 +115,7 @@ public class DoorsController : ControllerBase
 
     /// <summary>لیست مجوزهای یک در</summary>
     [HttpGet("{doorId:guid}/permissions")]
-    [Authorize(Roles = "Admin,DoorManager")]
+    [Authorize(Policy = "panel:doors")]
     public async Task<IActionResult> GetPermissions(Guid doorId)
     {
         var perms = await _mediator.Send(new GetDoorPermissionsQuery(doorId));

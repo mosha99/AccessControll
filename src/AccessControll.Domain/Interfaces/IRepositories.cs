@@ -35,6 +35,13 @@ public interface IStationRelayService
     Task CloseDoorAsync(string stationMac, string i2cAddress, string pin, bool isActiveLow = true);
 }
 
+public interface IRolePanelPermissionRepository
+{
+    Task<List<string>> GetPanelsForRoleAsync(string roleName);
+    Task<List<string>> GetPanelsForRolesAsync(IEnumerable<string> roleNames);
+    Task SetPanelsForRoleAsync(string roleName, IEnumerable<string> panels);
+}
+
 public interface IUserDoorPermissionRepository
 {
     Task<IEnumerable<UserDoorPermission>> GetUserPermissionsAsync(string userId);

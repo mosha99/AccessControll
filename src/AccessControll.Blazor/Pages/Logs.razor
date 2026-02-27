@@ -1,12 +1,19 @@
 @page "/logs"
 @using AccessControll.Blazor.Services
 @using Microsoft.AspNetCore.Authorization
-@attribute [Authorize(Roles = "Admin,DoorManager")]
+@attribute [Authorize]
 @inject ILogService LogService
 @inject IDoorService DoorService
+@inject IPanelService PanelService
 
 <PageTitle>لاگ دسترسی — MediaR</PageTitle>
 
+@if (!_hasAccess)
+{
+    <div class="access-denied" style="padding:60px;text-align:center"><h2>🚫 دسترسی ندارید</h2></div>
+}
+else
+{
 <div class="page" dir="rtl">
     <div class="page-header">
         <h1>📋 لاگ دسترسی درها</h1>
@@ -106,8 +113,10 @@
         }
     </div>
 </div>
+} @* /else _hasAccess *@
 
 @code {
+    private bool _hasAccess = true;
     private List<DoorAccessLogDto> _logs = new();
     private List<DoorDto> _doors = new();
     private bool _loading = true;
@@ -118,6 +127,10 @@
 
     protected override async Task OnInitializedAsync()
     {
+        var panels = await PanelService.GetMyPanelsAsync();
+        _hasAccess = panels.Contains("logs");
+        if (!_hasAccess) return;
+
         _doors = await DoorService.GetAllAsync();
         await LoadLogs();
     }

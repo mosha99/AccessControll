@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 using AccessControll.Application.Auth;
+using AccessControll.Application.Roles;
 using AccessControll.Contracts.Auth;
 using AccessControll.Domain.Entities;
 
@@ -70,6 +71,18 @@ public class AuthController : ControllerBase
     {
         var hasUsers = await _userManager.Users.AnyAsync();
         return Ok(new { required = !hasUsers });
+    }
+
+    /// <summary>پنل‌هایی که کاربر جاری به آن‌ها دسترسی دارد</summary>
+    [HttpGet("my-panels")]
+    [Authorize]
+    public async Task<IActionResult> MyPanels()
+    {
+        var roles = User.Claims
+            .Where(c => c.Type == ClaimTypes.Role)
+            .Select(c => c.Value);
+        var panels = await _mediator.Send(new GetCurrentUserPanelsQuery(roles));
+        return Ok(panels);
     }
 
     /// <summary>ثبت اولین ادمین — فقط وقتی هیچ کاربری در سیستم نیست</summary>

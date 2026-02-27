@@ -11,7 +11,7 @@ namespace AccessControll.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-[Authorize(Roles = "Admin")]
+[Authorize(Policy = "panel:users")]
 public class UsersController : ControllerBase
 {
     private readonly IMediator _mediator;
@@ -32,7 +32,6 @@ public class UsersController : ControllerBase
     }
 
     [HttpGet("{id}/permissions")]
-    [Authorize(Roles = "Admin,DoorManager")]
     public async Task<IActionResult> GetPermissions(string id)
     {
         var perms = await _mediator.Send(new GetUserPermissionsForDoorsQuery(id));
@@ -71,7 +70,7 @@ public class UsersController : ControllerBase
 
 [ApiController]
 [Route("api/[controller]")]
-[Authorize(Roles = "Admin")]
+[Authorize(Policy = "panel:roles")]
 public class RolesController : ControllerBase
 {
     private readonly IMediator _mediator;
@@ -85,6 +84,7 @@ public class RolesController : ControllerBase
     }
 
     [HttpPost]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Create([FromBody] CreateRoleRequest request)
     {
         var (succeeded, error) = await _mediator.Send(new CreateRoleCommand(request.Name));
@@ -92,6 +92,7 @@ public class RolesController : ControllerBase
     }
 
     [HttpDelete("{id}")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Delete(string id)
     {
         var (succeeded, error) = await _mediator.Send(new DeleteRoleCommand(id));
@@ -99,6 +100,7 @@ public class RolesController : ControllerBase
     }
 
     [HttpPost("assign")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> AssignRole([FromBody] AssignRoleRequest request)
     {
         var success = await _mediator.Send(new AssignRoleToUserCommand(request.UserId, request.RoleName));
@@ -106,9 +108,25 @@ public class RolesController : ControllerBase
     }
 
     [HttpPost("remove")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> RemoveRole([FromBody] AssignRoleRequest request)
     {
         var success = await _mediator.Send(new RemoveRoleFromUserCommand(request.UserId, request.RoleName));
         return success ? Ok() : BadRequest();
+    }
+
+    [HttpGet("{roleName}/panels")]
+    public async Task<IActionResult> GetPanels(string roleName)
+    {
+        var panels = await _mediator.Send(new GetRolePanelsQuery(roleName));
+        return Ok(new RolePanelsDto(roleName, panels));
+    }
+
+    [HttpPut("{roleName}/panels")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> SetPanels(string roleName, [FromBody] SetRolePanelsRequest request)
+    {
+        var success = await _mediator.Send(new SetRolePanelsCommand(roleName, request.Panels));
+        return success ? Ok() : BadRequest(new { message = "پنل‌های ارسالی معتبر نیستند" });
     }
 }

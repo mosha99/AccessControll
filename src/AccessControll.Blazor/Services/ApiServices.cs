@@ -34,11 +34,13 @@ public class AuthService : IAuthService
 {
     private readonly HttpClient _http;
     private readonly JwtAuthStateProvider _authState;
+    private readonly IPanelService _panelService;
 
-    public AuthService(HttpClient http, AuthenticationStateProvider authState)
+    public AuthService(HttpClient http, AuthenticationStateProvider authState, IPanelService panelService)
     {
         _http = http;
         _authState = (JwtAuthStateProvider)authState;
+        _panelService = panelService;
     }
 
     public async Task<LoginResponse> LoginAsync(string email, string password, string? twoFactorCode = null)
@@ -74,6 +76,7 @@ public class AuthService : IAuthService
     public async Task LogoutAsync()
     {
         try { await _http.PostAsync("api/auth/logout", null); } catch { }
+        _panelService.ClearCache();
         await _authState.NotifyLogout();
     }
 
@@ -460,4 +463,57 @@ public class LogService : ILogService
     public Task<PagedResult<DoorAccessLogDto>> GetLogsAsync(Guid? doorId = null, string? userId = null,
         DateTime? from = null, DateTime? to = null, int page = 1, int pageSize = 25) =>
         _doorService.GetLogsAsync(doorId, userId, from, to, page, pageSize);
+}
+
+// ── Panel Service ─────────────────────────────────────────────────────────────
+
+public interface IPanelService
+{
+    Task<List<string>> GetMyPanelsAsync();
+    Task<List<string>> GetRolePanelsAsync(string roleName);
+    Task<bool> SetRolePanelsAsync(string roleName, List<string> panels);
+    void ClearCache();
+}
+
+public class PanelService : IPanelService
+{
+    private readonly HttpClient _http;
+    private List<string>? _cachedPanels;
+
+    public PanelService(HttpClient http) => _http = http;
+
+    public async Task<List<string>> GetMyPanelsAsync()
+    {
+        if (_cachedPanels is not null)
+            return _cachedPanels;
+
+        try
+        {
+            _cachedPanels = await _http.GetFromJsonAsync<List<string>>("api/auth/my-panels", JsonOptions.CaseInsensitive) ?? new();
+        }
+        catch
+        {
+            _cachedPanels = new();
+        }
+
+        return _cachedPanels;
+    }
+
+    public async Task<List<string>> GetRolePanelsAsync(string roleName)
+    {
+        try
+        {
+            var dto = await _http.GetFromJsonAsync<RolePanelsDto>($"api/roles/{roleName}/panels", JsonOptions.CaseInsensitive);
+            return dto?.Panels ?? new();
+        }
+        catch { return new(); }
+    }
+
+    public async Task<bool> SetRolePanelsAsync(string roleName, List<string> panels)
+    {
+        var r = await _http.PutAsJsonAsync($"api/roles/{roleName}/panels", new SetRolePanelsRequest(panels));
+        return r.IsSuccessStatusCode;
+    }
+
+    public void ClearCache() => _cachedPanels = null;
 }

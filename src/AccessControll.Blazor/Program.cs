@@ -24,6 +24,7 @@ builder.Services.AddScoped<IDoorService, DoorService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IRoleService, RoleService>();
 builder.Services.AddScoped<ILogService, LogService>();
+builder.Services.AddScoped<IPanelService, PanelService>();
 builder.Services.AddScoped<DoorHubService>();
 builder.Services.AddScoped<IStationService, StationService>();
 

@@ -61,20 +61,27 @@
             <div class="doors-grid">
                 @foreach (var door in _doors)
                 {
-                    <div class="door-card @(door.IsLocked ? "locked" : "unlocked") @(!door.IsEnabled ? "disabled" : "")">
-                        <div class="door-icon">@(door.IsLocked ? "🔒" : "🔓")</div>
+                    <div class="door-card @(door.IsMomentary ? "momentary" : (door.IsLocked ? "locked" : "unlocked")) @(!door.IsEnabled ? "disabled" : "")">
+                        <div class="door-icon">@(door.IsMomentary ? "⚡" : (door.IsLocked ? "🔒" : "🔓"))</div>
                         <div class="door-info">
                             <span class="door-name">@door.Name</span>
                             <span class="door-location">📍 @door.Location</span>
-                            <span class="door-status">@(door.IsEnabled ? (door.IsLocked ? "قفل" : "باز") : "غیرفعال")</span>
+                            <span class="door-status">@(door.IsEnabled ? (door.IsMomentary ? "پالسی" : (door.IsLocked ? "خاموش" : "روشن")) : "غیرفعال")</span>
                         </div>
                         @if (door.IsEnabled)
                         {
                             <div class="door-actions">
-                                <button class="btn-open" @onclick="@(() => ControlDoor(door.Id, false))"
-                                        disabled="@(!door.IsLocked)">باز</button>
-                                <button class="btn-lock" @onclick="@(() => ControlDoor(door.Id, true))"
-                                        disabled="@(door.IsLocked)">قفل</button>
+                                @if (door.IsMomentary)
+                                {
+                                    <button class="btn-pulse" @onclick="@(() => ControlDoor(door.Id, false))">⚡ پالس</button>
+                                }
+                                else
+                                {
+                                    <button class="btn-on" @onclick="@(() => ControlDoor(door.Id, false))"
+                                            disabled="@(!door.IsLocked)">روشن</button>
+                                    <button class="btn-off" @onclick="@(() => ControlDoor(door.Id, true))"
+                                            disabled="@(door.IsLocked)">خاموش</button>
+                                }
                             </div>
                         }
                     </div>
@@ -201,20 +208,23 @@
     }
     .door-card.unlocked { border-color: #27ae60; background: #f0fff4; }
     .door-card.locked { border-color: #e74c3c; background: #fff5f5; }
+    .door-card.momentary { border-color: #f39c12; background: #fffbf0; }
     .door-card.disabled { opacity: 0.5; background: #f9f9f9; border-color: #ccc; }
     .door-icon { font-size: 36px; }
     .door-name { font-weight: 600; font-size: 15px; color: #333; display: block; }
     .door-location { font-size: 12px; color: #888; display: block; }
     .door-status { font-size: 12px; font-weight: 500; display: block; color: #555; }
     .door-actions { display: flex; gap: 8px; margin-top: 4px; }
-    .btn-open, .btn-lock {
+    .btn-on, .btn-off, .btn-pulse {
         padding: 6px 14px; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; font-weight: 500; transition: all 0.2s;
     }
-    .btn-open { background: #27ae60; color: white; }
-    .btn-open:hover:not(:disabled) { background: #229954; }
-    .btn-lock { background: #e74c3c; color: white; }
-    .btn-lock:hover:not(:disabled) { background: #c0392b; }
-    .btn-open:disabled, .btn-lock:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-on { background: #27ae60; color: white; }
+    .btn-on:hover:not(:disabled) { background: #229954; }
+    .btn-off { background: #e74c3c; color: white; }
+    .btn-off:hover:not(:disabled) { background: #c0392b; }
+    .btn-on:disabled, .btn-off:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-pulse { background: #f39c12; color: white; padding: 6px 20px; font-size: 14px; font-weight: 600; }
+    .btn-pulse:hover { background: #d68910; transform: scale(1.05); }
 
     .log-list { display: flex; flex-direction: column; gap: 8px; }
     .log-item {

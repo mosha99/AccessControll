@@ -55,6 +55,7 @@
         }
         else
         {
+            <div class="table-scroll">
             <table class="data-table">
                 <thead>
                     <tr>
@@ -95,6 +96,7 @@
                     }
                 </tbody>
             </table>
+            </div>
 
             <div class="pagination">
                 <button @onclick="PrevPage" disabled="@(_page == 1)">← قبلی</button>
@@ -175,7 +177,7 @@
     .btn-filter { background: #0f3460; color: white; padding: 9px 18px; border: none; border-radius: 8px; font-size: 13px; cursor: pointer; }
     .btn-reset { background: #f0f0f0; color: #333; padding: 9px 14px; border: none; border-radius: 8px; font-size: 13px; cursor: pointer; }
 
-    .card { background: white; border-radius: 14px; box-shadow: 0 2px 12px rgba(0,0,0,0.07); overflow: hidden; }
+    .card { background: white; border-radius: 14px; box-shadow: 0 2px 12px rgba(0,0,0,0.07); overflow: clip; }
     .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
     .data-table th { background: #f0f4ff; padding: 13px 14px; text-align: right; font-weight: 600; color: #333; border-bottom: 2px solid #e8e8e8; }
     .data-table td { padding: 11px 14px; border-bottom: 1px solid #f5f5f5; vertical-align: middle; }

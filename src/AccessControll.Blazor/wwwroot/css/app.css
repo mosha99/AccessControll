@@ -1,0 +1,74 @@
+/* ── Global responsive styles ───────────────────────────────────────────── */
+
+/* Tables: horizontal scroll wrapper */
+.table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+/* Table inside wrapper: auto width (overrides width:100% in components) so it
+   expands to fit cell content. Cells don't wrap → table scrolls horizontally. */
+.table-scroll table {
+    width: auto;
+}
+.table-scroll th,
+.table-scroll td {
+    white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+    /* Content padding */
+    .content-wrapper {
+        padding: 16px !important;
+    }
+
+    /* Page headers: stack vertically */
+    .page-header {
+        flex-direction: column !important;
+        align-items: flex-start !important;
+        gap: 12px !important;
+    }
+    .page-header > div {
+        width: 100%;
+    }
+    .page-header button {
+        width: 100%;
+    }
+
+    /* Form grids: single column */
+    .form-grid-2 {
+        grid-template-columns: 1fr !important;
+    }
+
+    /* Modals: bottom sheet style on mobile */
+    .modal-overlay {
+        align-items: flex-end !important;
+        padding: 0 !important;
+    }
+    .modal {
+        width: 100% !important;
+        max-width: 100% !important;
+        border-radius: 20px 20px 0 0 !important;
+        max-height: 90vh !important;
+    }
+    .modal-wide {
+        width: 100% !important;
+    }
+
+    /* Action buttons in tables */
+    .actions {
+        flex-wrap: wrap;
+    }
+
+    /* Section titles */
+    .section-title {
+        font-size: 14px !important;
+    }
+
+    /* Buttons full-width in footer */
+    .modal-footer {
+        flex-direction: column-reverse;
+    }
+    .modal-footer button {
+        width: 100%;
+    }
+}
